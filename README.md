@@ -70,14 +70,15 @@ Noor uses an isolated `whatsapp-web.js` session at `data\whatsapp-webjs-auth`; s
 
 - It receives new direct-message events instead of polling or exporting chat history.
 - It records a stable message fingerprint for duplicate protection. Incoming message text is not stored unless **Store message previews** is enabled in Settings.
-- Matching rules in `config\whatsapp_reply_rules.json` decide whether to send a direct reply, run an assistant action, call research/Gemini/Codex, or run a configured safe tool command.
+- Matching rules decide whether to send a direct reply, run an assistant action, call research/Gemini/Codex, run a configured safe tool command, or combine multiple actions.
+- The WhatsApp Rules page manages rule ID, audience, multiple triggers, and multiple actions without requiring manual JSON edits. The JSON file remains the portable storage format at `config\whatsapp_reply_rules.json`.
 - Unmatched messages are ignored. There are no WhatsApp quiet-hour, cooldown, or hourly reply limits.
 - Groups are skipped by default. Duplicate protection, chat verification immediately before sending, and audit history are applied before a reply is sent.
 - It uses an unofficial WhatsApp Web client, so WhatsApp-side changes can require a library update.
 
 ### Automatic Replies
 
-When automatic replies are enabled in **Settings**, Noor checks unread direct chats every 12 seconds. A `hello` or `hi` matches the included greeting rule and replies automatically from any direct contact. Add or change rules in `config\whatsapp_reply_rules.json`; they apply on the next check. Rules can use `reply`, `assistant`, `ai`, `research`, `gemini`, `codex`, or `tool` actions. Unmatched messages are recorded as ignored and no reply is sent.
+When automatic replies are enabled in **Settings**, Noor processes new direct-message events from the dedicated bridge. A `hello` or `hi` matches the included greeting rule and replies automatically from any direct contact. Add or change rules on the **WhatsApp Rules** page; they apply on the next check. Rules support message, call, date, and time triggers; everyone, specific-contact, and excluded-contact audiences; and `reply`, `assistant`, `ai`, `research`, `gemini`, `codex`, `tool`, and log actions. Unmatched messages are recorded as ignored and no reply is sent.
 
 Install the local browser runtime once after installing dependencies:
 

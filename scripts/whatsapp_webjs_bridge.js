@@ -30,6 +30,7 @@ let activeRequestId = '';
 let activeRequestStartedAt = 0;
 let diagnostics = {
   message_events: 0,
+  call_events: 0,
   incoming_events: 0,
   ignored_events: 0,
   last_incoming_at: '',
@@ -47,7 +48,25 @@ function serializedId(value) {
   if (!value) return '';
   if (typeof value === 'string') return value;
   if (typeof value._serialized === 'string') return value._serialized;
+  if (value.id) return serializedId(value.id);
   return String(value);
+}
+
+function directChatId(value) {
+  const chatId = serializedId(value);
+  return (chatId.endsWith('@c.us') || chatId.endsWith('@lid')) ? chatId : '';
+}
+
+function digitsOnly(value) {
+  return String(value || '').replace(/\D+/g, '');
+}
+
+function normalizedText(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function chatTitle(chat) {
+  return String(chat && (chat.name || chat.formattedTitle || chat.pushname || '') || '').trim();
 }
 
 function messageHash(message) {
@@ -109,7 +128,9 @@ client.on('change_state', (state) => {
 });
 function writeIncomingEvent(message, fallback = {}) {
   diagnostics.message_events += 1;
-  if (message.fromMe) {
+  const eventType = String(fallback.eventType || 'message');
+  if (eventType === 'call') diagnostics.call_events += 1;
+  if (eventType !== 'call' && message.fromMe) {
     diagnostics.ignored_events += 1;
     diagnostics.last_ignored_reason = 'from_me';
     writeStatus();
@@ -122,8 +143,8 @@ function writeIncomingEvent(message, fallback = {}) {
     writeStatus();
     return;
   }
-  const body = String(message.body || '');
-  if (!body.trim()) {
+  const body = String(fallback.body || message.body || '');
+  if (eventType !== 'call' && !body.trim()) {
     diagnostics.ignored_events += 1;
     diagnostics.last_ignored_reason = 'empty_body';
     writeStatus();
@@ -140,6 +161,8 @@ function writeIncomingEvent(message, fallback = {}) {
   writeJson(eventPath, {
     event_id: eventId,
     message_id: serializedId(message.id),
+    event_type: eventType,
+    event_subtype: String(fallback.eventSubtype || ''),
     chat_id: chatId,
     chat_label: String(fallback.chatLabel || 'Direct contact'),
     body: body.slice(0, 4000),
@@ -154,6 +177,19 @@ function writeIncomingEvent(message, fallback = {}) {
 
 client.on('message', writeIncomingEvent);
 client.on('message_create', writeIncomingEvent);
+client.on('call', (call) => {
+  const chatId = directChatId(call && call.from);
+  writeIncomingEvent(
+    {
+      id: { _serialized: `call-${chatId}-${call && (call.id || call.timestamp) || Date.now()}` },
+      from: chatId,
+      fromMe: false,
+      body: 'Incoming WhatsApp call',
+      timestamp: Date.now(),
+    },
+    { eventType: 'call', eventSubtype: 'incoming', chatId, chatLabel: 'Direct contact', body: 'Incoming WhatsApp call' },
+  );
+});
 
 async function promiseTimeout(promise, milliseconds, label) {
   let timer;
@@ -251,6 +287,45 @@ async function nextUnreadPayload() {
   };
 }
 
+async function resolveDirectChatId(request) {
+  const requestedId = directChatId(request.chat_id);
+  if (requestedId) return requestedId;
+
+  const target = String(request.contact || request.chat_label || request.expected_chat || '').trim();
+  if (!target) return '';
+  const directTarget = directChatId(target);
+  if (directTarget) return directTarget;
+
+  const targetDigits = digitsOnly(target);
+  if (targetDigits.length >= 8 && typeof client.getNumberId === 'function') {
+    try {
+      const numberId = await promiseTimeout(client.getNumberId(targetDigits), 10000, 'WhatsApp number lookup');
+      const resolved = directChatId(numberId);
+      if (resolved) return resolved;
+    } catch (error) {
+      diagnostics.last_ignored_reason = `number_lookup_failed:${String(error.message || error).slice(0, 80)}`;
+    }
+  }
+
+  const targetName = normalizedText(target);
+  const chats = await promiseTimeout(client.getChats(), 10000, 'WhatsApp chat lookup');
+  const directChats = chats.filter((chat) => {
+    const chatId = directChatId(chat.id);
+    return chatId && !chat.isGroup && !chat.isReadOnly;
+  });
+  const exact = directChats.find((chat) => {
+    const chatId = directChatId(chat.id);
+    const title = normalizedText(chatTitle(chat));
+    return chatId === target || title === targetName || digitsOnly(chatId) === targetDigits;
+  });
+  if (exact) return directChatId(exact.id);
+  if (targetName.length >= 3) {
+    const partial = directChats.find((chat) => normalizedText(chatTitle(chat)).includes(targetName));
+    if (partial) return directChatId(partial.id);
+  }
+  return '';
+}
+
 async function withTimeout(promise, milliseconds, label) {
   try {
     return await promiseTimeout(promise, milliseconds, label);
@@ -316,9 +391,9 @@ function handleRequest(request) {
     if (request.action === 'send-reply') {
       if (!connected) return { ok: false, message: 'WhatsApp bridge is not connected yet.', data: { connected: false }, error: '' };
       return await withTimeout((async () => {
-        const chatId = String(request.chat_id || '');
         const reply = String(request.reply || '').trim();
-        if ((!chatId.endsWith('@c.us') && !chatId.endsWith('@lid')) || !reply) {
+        const chatId = await resolveDirectChatId(request);
+        if (!chatId || !reply) {
           return { ok: false, message: 'Reply request failed chat verification.', data: {}, error: '' };
         }
         await client.sendMessage(chatId, reply, { waitUntilMsgSent: true });

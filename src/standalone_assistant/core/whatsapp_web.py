@@ -25,12 +25,13 @@ from standalone_assistant.core.paths import (
     WHATSAPP_BRIDGE_STARTING,
     WHATSAPP_BRIDGE_STATUS,
     WHATSAPP_INCOMING_DIR,
-    WHATSAPP_REPLY_RULES,
     WHATSAPP_WEBJS_AUTH_DIR,
     ensure_runtime_dirs,
 )
 from standalone_assistant.core.process_utils import hidden_subprocess_kwargs
 from standalone_assistant.core.storage import Storage, dumps, utc_now
+from standalone_assistant.core.time_parser import now_local
+from standalone_assistant.core.whatsapp_rules import load_whatsapp_rules, rule_actions, rule_audience, rule_triggers
 
 
 @dataclass
@@ -48,6 +49,15 @@ class WhatsAppRuleResult:
     reply: str = ""
     source: str = ""
     error: str = ""
+
+
+@dataclass
+class WhatsAppRuleContext:
+    event_type: str = "message"
+    event_subtype: str = ""
+    chat_id: str = ""
+    chat_label: str = ""
+    now: datetime | None = None
 
 
 class WhatsAppWebService:
@@ -172,10 +182,15 @@ class WhatsAppWebService:
         auto = self.auto_settings()
         if not bool(auto.get("enabled")):
             return None
+        scheduled_result = self._process_scheduled_rules(auto)
+        if scheduled_result is not None:
+            return scheduled_result
         event_result = self._process_webjs_event(auto)
         if event_result is not None:
             return event_result
         state = self.status().data or {}
+        if state.get("backend") == "whatsapp-web.js" and not bool(auto.get("fallback_scan_enabled", False)):
+            return None
         result = self._request("next-unread")
         if not result.ok or not result.data:
             if state.get("backend") == "whatsapp-web.js" and self._is_unread_scan_failure(result):
@@ -215,7 +230,7 @@ class WhatsAppWebService:
         if self.storage.fetch_one("SELECT 1 FROM whatsapp_auto_replies WHERE message_hash = ?", (message_hash,)):
             return None
         self.capture_fingerprint(chat, message_hash, body)
-        rule_result = self._reply_for(body)
+        rule_result = self._reply_for(body, WhatsAppRuleContext(event_type="message", chat_id=str(result.data.get("chat_id") or ""), chat_label=chat, now=now_local()))
         if not rule_result.matched:
             self._record_auto_reply(chat, message_hash, "", "no-rule", "Ignored")
             self.storage.log("info", "WhatsApp", "Unread direct message ignored because no WhatsApp rule matched.", {"chat": chat, "message_hash": message_hash})
@@ -285,6 +300,7 @@ class WhatsAppWebService:
             "enabled": True,
             "poll_seconds": 12,
             "skip_groups": True,
+            "fallback_scan_enabled": False,
             "activity_baseline_ready": False,
             "activity_baseline_hashes": [],
         }
@@ -315,44 +331,259 @@ class WhatsAppWebService:
             time.sleep(0.2)
         return WhatsAppResult(False, "The dedicated WhatsApp bridge did not answer in time.")
 
-    def _reply_for(self, message: str) -> WhatsAppRuleResult:
-        try:
-            rules = json.loads(WHATSAPP_REPLY_RULES.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return WhatsAppRuleResult(False, False, error="WhatsApp rules could not be read.")
-        if not isinstance(rules, list):
-            return WhatsAppRuleResult(False, False, error="WhatsApp rules file is not a list.")
+    def preview_matches(self, message: str, *, event_type: str = "message", chat_label: str = "", chat_id: str = "") -> list[str]:
+        context = WhatsAppRuleContext(event_type=event_type, chat_id=chat_id, chat_label=chat_label, now=now_local())
+        matches: list[str] = []
+        for rule in load_whatsapp_rules():
+            if not bool(rule.get("enabled", True)):
+                continue
+            if not self._audience_matches(rule, context):
+                continue
+            matched, _match = self._rule_matches(rule, message, context)
+            if matched:
+                rule_id = str(rule.get("id") or "custom")
+                action_names = " + ".join(str(action.get("type") or "reply") for action in rule_actions(rule))
+                matches.append(f"{rule_id}: {action_names or 'no actions'}")
+        return matches
+
+    def _reply_for(self, message: str, context: WhatsAppRuleContext | None = None) -> WhatsAppRuleResult:
+        context = context or WhatsAppRuleContext(event_type="message", now=now_local())
+        if context.now is None:
+            context.now = now_local()
+        rules = load_whatsapp_rules()
         for rule in rules:
-            if not isinstance(rule, dict):
+            if not bool(rule.get("enabled", True)):
                 continue
-            pattern = str(rule.get("pattern") or "")
-            try:
-                match = re.search(pattern, message, flags=re.IGNORECASE) if pattern else None
-            except re.error:
+            if not self._audience_matches(rule, context):
                 continue
-            if match:
-                return self._execute_rule(rule, message, match)
+            matched, match = self._rule_matches(rule, message, context)
+            if matched:
+                return self._execute_rule(rule, message, match, context)
         return WhatsAppRuleResult(False, True)
 
-    def _execute_rule(self, rule: dict[str, Any], message: str, match: re.Match[str]) -> WhatsAppRuleResult:
-        rule_id = str(rule.get("id") or "custom")
-        action = rule.get("action")
-        action_type = "reply"
-        action_payload: dict[str, Any] = {}
-        if isinstance(action, str) and action.strip():
-            action_type = action.strip().casefold()
-        elif isinstance(action, dict):
-            action_payload = action
-            action_type = str(action.get("type") or "reply").strip().casefold()
+    def _rule_matches(self, rule: dict[str, Any], message: str, context: WhatsAppRuleContext) -> tuple[bool, re.Match[str] | None]:
+        triggers = rule_triggers(rule)
+        if not triggers:
+            return False, None
+        logic = str(rule.get("trigger_logic") or "any").strip().casefold()
+        require_all = logic == "all"
+        outcomes: list[bool] = []
+        first_match: re.Match[str] | None = None
+        for trigger in triggers:
+            ok, match = self._trigger_matches(trigger, message, context)
+            outcomes.append(ok)
+            if match and first_match is None:
+                first_match = match
+        if not outcomes:
+            return False, None
+        return (all(outcomes) if require_all else any(outcomes)), first_match
 
-        reply_template = str(action_payload.get("reply") or rule.get("reply") or "").strip()
+    def _trigger_matches(self, trigger: dict[str, Any], message: str, context: WhatsAppRuleContext) -> tuple[bool, re.Match[str] | None]:
+        trigger_type = str(trigger.get("type") or "message").strip().casefold()
+        if trigger_type == "message":
+            return self._message_trigger_matches(trigger, message, context)
+        if trigger_type == "call":
+            return self._call_trigger_matches(trigger, context), None
+        if trigger_type == "time":
+            return self._time_trigger_matches(trigger, context), None
+        if trigger_type == "date":
+            return self._date_trigger_matches(trigger, context), None
+        return False, None
+
+    def _message_trigger_matches(self, trigger: dict[str, Any], message: str, context: WhatsAppRuleContext) -> tuple[bool, re.Match[str] | None]:
+        if context.event_type != "message":
+            return False, None
+        value = str(trigger.get("value") or trigger.get("pattern") or "").strip()
+        match_type = str(trigger.get("match") or "contains").strip().casefold()
+        text = message.strip()
+        lowered = text.casefold()
+        needle = value.casefold()
+        if match_type == "any":
+            return bool(text), None
+        if not value:
+            return False, None
+        if match_type == "regex":
+            try:
+                match = re.search(value, text, flags=re.IGNORECASE)
+            except re.error:
+                return False, None
+            return bool(match), match
+        if match_type == "equals":
+            return lowered == needle, None
+        if match_type == "starts_with":
+            return lowered.startswith(needle), None
+        if match_type == "ends_with":
+            return lowered.endswith(needle), None
+        return needle in lowered, None
+
+    @staticmethod
+    def _call_trigger_matches(trigger: dict[str, Any], context: WhatsAppRuleContext) -> bool:
+        if context.event_type != "call":
+            return False
+        call_type = str(trigger.get("call_type") or trigger.get("value") or "any").strip().casefold()
+        if call_type in {"", "any"}:
+            return True
+        return call_type == (context.event_subtype or "incoming").casefold()
+
+    def _time_trigger_matches(self, trigger: dict[str, Any], context: WhatsAppRuleContext) -> bool:
+        now = context.now or now_local()
+        if not self._days_match(trigger, now):
+            return False
+        operator = str(trigger.get("operator") or "at").strip().casefold()
+        current_minutes = now.hour * 60 + now.minute
+        if operator == "between":
+            start = self._parse_time_minutes(str(trigger.get("start") or ""))
+            end = self._parse_time_minutes(str(trigger.get("end") or ""))
+            if start is None or end is None:
+                return False
+            if start <= end:
+                return start <= current_minutes <= end
+            return current_minutes >= start or current_minutes <= end
+        target = self._parse_time_minutes(str(trigger.get("time") or trigger.get("value") or ""))
+        if target is None:
+            return False
+        if operator == "after":
+            return current_minutes >= target
+        if operator == "before":
+            return current_minutes <= target
+        return current_minutes == target
+
+    def _date_trigger_matches(self, trigger: dict[str, Any], context: WhatsAppRuleContext) -> bool:
+        now = context.now or now_local()
+        operator = str(trigger.get("operator") or "on").strip().casefold()
+        current = now.date()
+        if operator == "between":
+            start = self._parse_date_value(str(trigger.get("start") or ""))
+            end = self._parse_date_value(str(trigger.get("end") or ""))
+            return bool(start and end and start <= current <= end)
+        target = self._parse_date_value(str(trigger.get("date") or trigger.get("value") or ""))
+        if target is None:
+            return False
+        if operator == "after":
+            return current >= target
+        if operator == "before":
+            return current <= target
+        return current == target
+
+    @staticmethod
+    def _parse_time_minutes(value: str) -> int | None:
+        raw = value.strip().lower().replace(".", "")
+        match = re.fullmatch(r"(\d{1,2})(?::(\d{2}))?\s*(am|pm)?", raw)
+        if not match:
+            return None
+        hour = int(match.group(1))
+        minute = int(match.group(2) or 0)
+        ampm = match.group(3)
+        if ampm == "pm" and hour < 12:
+            hour += 12
+        elif ampm == "am" and hour == 12:
+            hour = 0
+        if hour > 23 or minute > 59:
+            return None
+        return hour * 60 + minute
+
+    @staticmethod
+    def _parse_date_value(value: str):
+        raw = value.strip().casefold()
+        today = now_local().date()
+        if raw == "today":
+            return today
+        if raw == "tomorrow":
+            return today + timedelta(days=1)
+        for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%d/%m/%Y"):
+            try:
+                return datetime.strptime(raw, fmt).date()
+            except ValueError:
+                continue
+        return None
+
+    @staticmethod
+    def _days_match(trigger: dict[str, Any], now: datetime) -> bool:
+        raw_days = trigger.get("days") or []
+        if isinstance(raw_days, str):
+            days = [item.strip().casefold() for item in re.split(r"[,;\s]+", raw_days) if item.strip()]
+        elif isinstance(raw_days, list):
+            days = [str(item).strip().casefold() for item in raw_days if str(item).strip()]
+        else:
+            days = []
+        if not days:
+            return True
+        weekday = now.strftime("%a").casefold()
+        full = now.strftime("%A").casefold()
+        return weekday in days or full in days
+
+    def _audience_matches(self, rule: dict[str, Any], context: WhatsAppRuleContext) -> bool:
+        audience = rule_audience(rule)
+        scope = audience["scope"]
+        contacts = audience["contacts"]
+        if scope == "everyone":
+            return True
+        matched = any(self._contact_matches(contact, context) for contact in contacts)
+        if scope == "contacts":
+            return matched
+        if scope == "except_contacts":
+            return not matched
+        return True
+
+    @staticmethod
+    def _contact_matches(contact: str, context: WhatsAppRuleContext) -> bool:
+        needle = contact.strip().casefold()
+        if not needle:
+            return False
+        chat_id = context.chat_id.strip().casefold()
+        chat_label = context.chat_label.strip().casefold()
+        if needle in {chat_id, chat_label}:
+            return True
+        digits = re.sub(r"\D+", "", needle)
+        chat_digits = re.sub(r"\D+", "", chat_id)
+        if digits and chat_digits and digits == chat_digits:
+            return True
+        return bool(len(needle) >= 3 and chat_label and (needle in chat_label or chat_label in needle))
+
+    def _execute_rule(
+        self,
+        rule: dict[str, Any],
+        message: str,
+        match: re.Match[str] | None,
+        context: WhatsAppRuleContext,
+    ) -> WhatsAppRuleResult:
+        rule_id = str(rule.get("id") or "custom")
+        actions = rule_actions(rule)
+        if not actions:
+            return WhatsAppRuleResult(True, False, source=f"rule:{rule_id}", error="Matched rule has no actions.")
+        replies: list[str] = []
+        sources: list[str] = []
+        for action in actions:
+            result = self._execute_action(rule_id, action, message, match, context)
+            if result.source:
+                sources.append(result.source)
+            if not result.ok:
+                return WhatsAppRuleResult(True, False, source=result.source or f"rule:{rule_id}", error=result.error)
+            if result.reply.strip():
+                replies.append(result.reply.strip())
+        reply = "\n\n".join(replies).strip()
+        source = "+".join(sources)[:120] if sources else f"rule:{rule_id}"
+        if not reply:
+            return WhatsAppRuleResult(True, False, source=source, error="Matched rule actions produced no reply text.")
+        return WhatsAppRuleResult(True, True, reply[:1200], source)
+
+    def _execute_action(
+        self,
+        rule_id: str,
+        action: dict[str, Any],
+        message: str,
+        match: re.Match[str] | None,
+        context: WhatsAppRuleContext,
+    ) -> WhatsAppRuleResult:
+        action_type = str(action.get("type") or "reply").strip().casefold()
         source = f"rule:{rule_id}:{action_type}"
         if action_type == "reply":
+            reply_template = str(action.get("text") or action.get("reply") or "").strip()
             if not reply_template:
-                return WhatsAppRuleResult(True, False, source=source, error="Reply rule has no reply text.")
-            return WhatsAppRuleResult(True, True, self._render_rule_template(reply_template, message, match), source)
+                return WhatsAppRuleResult(True, False, source=source, error="Reply action has no text.")
+            return WhatsAppRuleResult(True, True, self._render_rule_template(reply_template, message, match, context), source)
 
-        prompt = self._render_rule_template(str(action_payload.get("prompt") or "{message}"), message, match)
+        prompt = self._render_rule_template(str(action.get("prompt") or action.get("text") or "{message}"), message, match, context)
         if action_type in {"assistant", "brain"}:
             from standalone_assistant.core.assistant_brain import AssistantBrain
 
@@ -360,17 +591,29 @@ class WhatsAppWebService:
             return WhatsAppRuleResult(True, bool(reply), reply[:1200], source, "" if reply else "Assistant returned an empty answer.")
 
         if action_type in {"ai", "research", "gemini", "codex"}:
-            provider = str(action_payload.get("provider") or ("auto" if action_type == "ai" else action_type))
+            provider = str(action.get("provider") or ("auto" if action_type == "ai" else action_type))
             result = AIResponseService(self.storage, PROJECT_ROOT).answer_with_provider(provider, prompt, channel="whatsapp")
             return WhatsAppRuleResult(True, result.ok, result.text, f"{source}:{result.source or provider}", result.error)
 
         if action_type in {"tool", "safe_tool"}:
-            return self._execute_tool_rule(rule_id, action_payload, message, match)
+            return self._execute_tool_rule(rule_id, action, message, match, context)
+
+        if action_type in {"note", "log"}:
+            note = prompt or "WhatsApp rule matched."
+            self.storage.log("info", "WhatsApp Rules", note[:600], {"rule_id": rule_id, "chat": context.chat_label})
+            return WhatsAppRuleResult(True, True, "", source)
 
         return WhatsAppRuleResult(True, False, source=source, error=f"Unknown WhatsApp rule action: {action_type}")
 
-    def _execute_tool_rule(self, rule_id: str, action: dict[str, Any], message: str, match: re.Match[str]) -> WhatsAppRuleResult:
-        tool_id = self._render_rule_template(str(action.get("tool_id") or ""), message, match).strip()
+    def _execute_tool_rule(
+        self,
+        rule_id: str,
+        action: dict[str, Any],
+        message: str,
+        match: re.Match[str] | None,
+        context: WhatsAppRuleContext,
+    ) -> WhatsAppRuleResult:
+        tool_id = self._render_rule_template(str(action.get("tool_id") or ""), message, match, context).strip()
         if not tool_id:
             return WhatsAppRuleResult(True, False, source=f"rule:{rule_id}:tool", error="Tool rule has no tool_id.")
         try:
@@ -384,25 +627,83 @@ class WhatsAppWebService:
                 str(action.get("summary_prompt") or "Summarize this tool result for a concise WhatsApp reply."),
                 message,
                 match,
+                context,
             )
             ai = AIResponseService(self.storage, PROJECT_ROOT).answer_with_provider(str(action.get("summarize_with")), prompt, channel="whatsapp", context=output)
             if ai.ok:
                 return WhatsAppRuleResult(True, True, ai.text, f"rule:{rule_id}:tool:{ai.source}")
         if action.get("reply_template"):
-            reply = self._render_rule_template(str(action.get("reply_template")), message, match, extra={"output": output})
+            reply = self._render_rule_template(str(action.get("reply_template")), message, match, context, extra={"output": output})
         else:
             prefix = "Tool command completed." if result.ok else "Tool command failed."
             reply = f"{prefix} {output}"
         return WhatsAppRuleResult(True, bool(reply.strip()), reply[:1200].strip(), f"rule:{rule_id}:tool", "" if result.ok else result.stderr)
 
     @staticmethod
-    def _render_rule_template(template: str, message: str, match: re.Match[str], extra: dict[str, str] | None = None) -> str:
-        values = {"message": message}
-        values.update({str(index): value or "" for index, value in enumerate(match.groups(), start=1)})
-        values.update({key: value or "" for key, value in match.groupdict().items()})
+    def _render_rule_template(
+        template: str,
+        message: str,
+        match: re.Match[str] | None,
+        context: WhatsAppRuleContext,
+        extra: dict[str, str] | None = None,
+    ) -> str:
+        now = context.now or now_local()
+        values = {
+            "message": message,
+            "chat": context.chat_label,
+            "chat_id": context.chat_id,
+            "event_type": context.event_type,
+            "date": now.strftime("%Y-%m-%d"),
+            "time": now.strftime("%I:%M %p").lstrip("0"),
+        }
+        if match:
+            values.update({str(index): value or "" for index, value in enumerate(match.groups(), start=1)})
+            values.update({key: value or "" for key, value in match.groupdict().items()})
         if extra:
             values.update(extra)
         return re.sub(r"\{([A-Za-z0-9_]+)\}", lambda item: values.get(item.group(1), ""), template).strip()
+
+    def _process_scheduled_rules(self, auto: dict[str, Any]) -> WhatsAppResult | None:
+        now = now_local()
+        for rule in load_whatsapp_rules():
+            if not bool(rule.get("enabled", True)) or not self._autonomous_schedule_rule(rule):
+                continue
+            audience = rule_audience(rule)
+            for contact in audience["contacts"]:
+                context = WhatsAppRuleContext(event_type="time", chat_label=contact, now=now)
+                matched, match = self._rule_matches(rule, "", context)
+                if not matched:
+                    continue
+                rule_id = str(rule.get("id") or "custom")
+                due_key = now.strftime("%Y%m%d%H%M")
+                message_hash = hashlib.sha256(f"scheduled\n{rule_id}\n{contact}\n{due_key}".encode("utf-8")).hexdigest()
+                if self.storage.fetch_one("SELECT 1 FROM whatsapp_auto_replies WHERE message_hash = ?", (message_hash,)):
+                    continue
+                rule_result = self._execute_rule(rule, "", match, context)
+                if not rule_result.ok or not rule_result.reply:
+                    self._record_auto_reply(contact, message_hash, "", rule_result.source or "scheduled-rule-error", "Blocked")
+                    self.storage.log("warning", "WhatsApp", "Scheduled WhatsApp rule could not produce a reply.", {"rule_id": rule_id, "contact": contact, "error": rule_result.error})
+                    return WhatsAppResult(False, "Scheduled WhatsApp rule could not produce a reply.", {"rule_id": rule_id, "contact": contact}, rule_result.error)
+                sent = self._request("send-reply", {"contact": contact, "chat_label": contact, "reply": rule_result.reply})
+                if not sent.ok:
+                    self._record_auto_reply(contact, message_hash, "", rule_result.source or "scheduled-send-error", "Blocked")
+                    return sent
+                self._record_auto_reply(contact, message_hash, rule_result.reply, rule_result.source, "Sent")
+                self.storage.log("warning", "WhatsApp", "Scheduled WhatsApp rule sent.", {"rule_id": rule_id, "contact": contact, "source": rule_result.source})
+                return WhatsAppResult(True, f"Scheduled WhatsApp rule sent using {rule_result.source}.", {"rule_id": rule_id, "contact": contact, "source": rule_result.source})
+        return None
+
+    @staticmethod
+    def _autonomous_schedule_rule(rule: dict[str, Any]) -> bool:
+        triggers = rule_triggers(rule)
+        if not triggers:
+            return False
+        types = {str(trigger.get("type") or "message").strip().casefold() for trigger in triggers}
+        if "message" in types or "call" in types or "time" not in types:
+            return False
+        has_exact_time = any(str(trigger.get("type") or "").strip().casefold() == "time" and str(trigger.get("operator") or "at").strip().casefold() == "at" for trigger in triggers)
+        audience = rule_audience(rule)
+        return bool(has_exact_time and audience["scope"] == "contacts" and audience["contacts"] and rule_actions(rule))
 
     def _record_auto_reply(self, chat: str, message_hash: str, reply: str, source: str, status: str) -> None:
         self.storage.execute(
@@ -426,8 +727,13 @@ class WhatsAppWebService:
             return None
         event_id = str(event.get("event_id") or "")
         chat_id = str(event.get("chat_id") or "")
+        chat_label = str(event.get("chat_label") or "Direct contact")
+        event_type = str(event.get("event_type") or "message").strip().casefold()
+        event_subtype = str(event.get("event_subtype") or event.get("call_type") or ("incoming" if event_type == "call" else "")).strip().casefold()
         body = str(event.get("body") or "").strip()
-        if len(event_id) != 64 or not chat_id or not body:
+        if event_type == "call" and not body:
+            body = "Incoming WhatsApp call"
+        if len(event_id) != 64 or not chat_id or event_type not in {"message", "call"} or not body:
             event_path.unlink(missing_ok=True)
             return WhatsAppResult(False, "Invalid WhatsApp event was discarded.")
         chat_key = hashlib.sha256(chat_id.encode("utf-8")).hexdigest()
@@ -435,7 +741,8 @@ class WhatsAppWebService:
             event_path.unlink(missing_ok=True)
             return None
         self.capture_fingerprint(chat_key, event_id, body)
-        rule_result = self._reply_for(body)
+        context = WhatsAppRuleContext(event_type=event_type, event_subtype=event_subtype, chat_id=chat_id, chat_label=chat_label, now=now_local())
+        rule_result = self._reply_for(body, context)
         if not rule_result.matched:
             self._record_auto_reply(chat_key, event_id, "", "no-rule", "Ignored")
             event_path.unlink(missing_ok=True)
@@ -446,7 +753,7 @@ class WhatsAppWebService:
             event_path.unlink(missing_ok=True)
             return WhatsAppResult(False, "Matched WhatsApp rule could not produce a reply.", error=rule_result.error)
         reply, source = rule_result.reply, rule_result.source
-        sent = self._request("send-reply", {"chat_id": chat_id, "chat_label": "Direct contact", "reply": reply})
+        sent = self._request("send-reply", {"chat_id": chat_id, "chat_label": chat_label, "reply": reply})
         if not sent.ok:
             return sent
         self._record_auto_reply(chat_key, event_id, reply, source, "Sent")

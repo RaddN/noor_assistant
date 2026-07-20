@@ -9,7 +9,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QPoint, QProcess, QRectF, QSize, Qt, QTimer, Signal
+from PySide6.QtCore import QDate, QPoint, QProcess, QRectF, QSize, Qt, QTime, QTimer, Signal
 from PySide6.QtGui import QAction, QColor, QFont, QIcon, QPainter, QPen, QRadialGradient, QTextCursor
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (
@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
+    QDateEdit,
     QDialog,
     QFileDialog,
     QFormLayout,
@@ -39,6 +40,7 @@ from PySide6.QtWidgets import (
     QTableWidget,
     QTableWidgetItem,
     QTextEdit,
+    QTimeEdit,
     QToolButton,
     QTreeWidget,
     QTreeWidgetItem,
@@ -50,12 +52,22 @@ from standalone_assistant.core.assistant_brain import AssistantBrain, AssistantR
 from standalone_assistant.core.connectors import ToolRegistry
 from standalone_assistant.core.connections import connection_snapshot
 from standalone_assistant.core.google_productivity import GoogleProductivityService
-from standalone_assistant.core.paths import ICON_DIR, SESSION_DIR, WHATSAPP_REPLY_RULES, ensure_runtime_dirs
+from standalone_assistant.core.paths import ICON_DIR, SESSION_DIR, ensure_runtime_dirs
 from standalone_assistant.core.project_scanner import build_codex_prompt, codex_status, find_agents, preflight_project
 from standalone_assistant.core.speech import SpeechService
 from standalone_assistant.core.storage import Storage, dumps, loads, utc_now
 from standalone_assistant.core.time_parser import format_local_timestamp, parse_when
 from standalone_assistant.core.whatsapp_web import WhatsAppWebService
+from standalone_assistant.core.whatsapp_rules import (
+    action_summary as whatsapp_action_summary,
+    audience_summary as whatsapp_audience_summary,
+    contacts_from_text,
+    contacts_to_text,
+    load_whatsapp_rules,
+    normalize_rule,
+    trigger_summary as whatsapp_trigger_summary,
+    write_whatsapp_rules,
+)
 
 
 SENSITIVE_WORDS = {
@@ -1289,30 +1301,93 @@ class WhatsAppRulesPage(BasePage):
 
     def __init__(self, storage: Storage) -> None:
         super().__init__(storage)
+        self.current_triggers: list[dict[str, Any]] = []
+        self.current_actions: list[dict[str, Any]] = []
         layout = QVBoxLayout(self)
-        form = QGridLayout()
+
+        top = QGridLayout()
         self.id_input = QLineEdit()
-        self.id_input.setPlaceholderText("greeting")
-        self.pattern_input = QLineEdit()
-        self.pattern_input.setPlaceholderText(r"^\s*(hi|hello|hey)\b")
-        self.reply_input = QPlainTextEdit()
-        self.reply_input.setPlaceholderText("Direct reply text. Leave blank when Action JSON produces the reply.")
-        self.reply_input.setMaximumHeight(110)
-        self.action_input = QPlainTextEdit()
-        self.action_input.setPlaceholderText('Optional action JSON, for example {"type":"assistant","prompt":"project status"}')
-        self.action_input.setMaximumHeight(130)
-        form.addWidget(QLabel("Rule ID"), 0, 0)
-        form.addWidget(self.id_input, 0, 1)
-        form.addWidget(QLabel("Pattern"), 1, 0)
-        form.addWidget(self.pattern_input, 1, 1)
-        form.addWidget(QLabel("Reply"), 2, 0)
-        form.addWidget(self.reply_input, 2, 1)
-        form.addWidget(QLabel("Action JSON"), 3, 0)
-        form.addWidget(self.action_input, 3, 1)
+        self.id_input.setPlaceholderText("project-status")
+        self.name_input = QLineEdit()
+        self.name_input.setPlaceholderText("Project status")
+        self.enabled_check = QCheckBox("Enabled")
+        self.enabled_check.setChecked(True)
+        self.trigger_logic = QComboBox()
+        self.trigger_logic.addItem("Any trigger can match", "any")
+        self.trigger_logic.addItem("All triggers must match", "all")
+        top.addWidget(QLabel("Rule ID"), 0, 0)
+        top.addWidget(self.id_input, 0, 1)
+        top.addWidget(QLabel("Name"), 0, 2)
+        top.addWidget(self.name_input, 0, 3)
+        top.addWidget(self.enabled_check, 0, 4)
+        top.addWidget(QLabel("Trigger logic"), 1, 0)
+        top.addWidget(self.trigger_logic, 1, 1, 1, 2)
+
+        audience_box = QGroupBox("Audience")
+        audience_layout = QGridLayout(audience_box)
+        self.audience_scope = QComboBox()
+        self.audience_scope.addItem("Everyone", "everyone")
+        self.audience_scope.addItem("Specific contacts", "contacts")
+        self.audience_scope.addItem("Everyone except selected contacts", "except_contacts")
+        self.contacts_input = QPlainTextEdit()
+        self.contacts_input.setPlaceholderText("One contact, phone number, or WhatsApp chat id per line")
+        self.contacts_input.setMaximumHeight(82)
+        audience_layout.addWidget(QLabel("Send for"), 0, 0)
+        audience_layout.addWidget(self.audience_scope, 0, 1)
+        audience_layout.addWidget(QLabel("Contacts"), 1, 0)
+        audience_layout.addWidget(self.contacts_input, 1, 1)
+
+        trigger_box = QGroupBox("Triggers")
+        trigger_layout = QVBoxLayout(trigger_box)
+        trigger_form = QGridLayout()
+        self.trigger_type = QComboBox()
+        for label, value in [("Message", "message"), ("Call", "call"), ("Time", "time"), ("Date", "date")]:
+            self.trigger_type.addItem(label, value)
+        self.trigger_stack = QStackedWidget()
+        self._build_trigger_stack()
+        self.trigger_type.currentIndexChanged.connect(self.update_trigger_editor)
+        trigger_form.addWidget(QLabel("Type"), 0, 0)
+        trigger_form.addWidget(self.trigger_type, 0, 1)
+        trigger_form.addWidget(self.trigger_stack, 1, 0, 1, 2)
+        trigger_buttons = QHBoxLayout()
+        trigger_buttons.addWidget(make_button("Add Trigger", self.add_trigger))
+        trigger_buttons.addWidget(make_button("Remove Trigger", self.remove_trigger))
+        trigger_buttons.addStretch()
+        self.triggers_table = QTableWidget()
+        configure_table(self.triggers_table)
+        self.triggers_table.setMaximumHeight(170)
+        trigger_layout.addLayout(trigger_form)
+        trigger_layout.addLayout(trigger_buttons)
+        trigger_layout.addWidget(self.triggers_table)
+
+        action_box = QGroupBox("Actions")
+        action_layout = QVBoxLayout(action_box)
+        action_form = QGridLayout()
+        self.action_type = QComboBox()
+        for label, value in [("Direct reply", "reply"), ("Noor brain", "assistant"), ("AI provider", "ai"), ("Safe tool command", "tool"), ("Log note", "log")]:
+            self.action_type.addItem(label, value)
+        self.action_stack = QStackedWidget()
+        self._build_action_stack()
+        self.action_type.currentIndexChanged.connect(self.update_action_editor)
+        action_form.addWidget(QLabel("Type"), 0, 0)
+        action_form.addWidget(self.action_type, 0, 1)
+        action_form.addWidget(self.action_stack, 1, 0, 1, 2)
+        action_buttons = QHBoxLayout()
+        action_buttons.addWidget(make_button("Add Action", self.add_action))
+        action_buttons.addWidget(make_button("Remove Action", self.remove_action))
+        action_buttons.addStretch()
+        self.actions_table = QTableWidget()
+        configure_table(self.actions_table)
+        self.actions_table.setMaximumHeight(170)
+        action_layout.addLayout(action_form)
+        action_layout.addLayout(action_buttons)
+        action_layout.addWidget(self.actions_table)
+
         buttons = QHBoxLayout()
+        buttons.addWidget(make_button("New Rule", self.new_rule))
         buttons.addWidget(make_button("Save Rule", self.save_rule))
         buttons.addWidget(make_button("Delete Rule", self.delete_rule))
-        buttons.addWidget(make_button("Test Pattern", self.test_pattern))
+        buttons.addWidget(make_button("Test Message", self.test_rule))
         buttons.addWidget(make_button("Refresh", self.refresh))
         buttons.addStretch()
         self.table = QTableWidget()
@@ -1321,95 +1396,403 @@ class WhatsAppRulesPage(BasePage):
         self.output = QPlainTextEdit()
         self.output.setReadOnly(True)
         self.output.setMaximumHeight(90)
-        layout.addLayout(form)
+        layout.addLayout(top)
+        layout.addWidget(audience_box)
+        layout.addWidget(trigger_box)
+        layout.addWidget(action_box)
         layout.addLayout(buttons)
         layout.addWidget(self.table)
         layout.addWidget(self.output)
         self.refresh()
+        self.new_rule()
 
     def load_rules(self) -> list[dict[str, Any]]:
-        try:
-            rules = json.loads(WHATSAPP_REPLY_RULES.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return []
-        if not isinstance(rules, list):
-            return []
-        clean_rules = []
-        for rule in rules:
-            if isinstance(rule, dict):
-                clean = dict(rule)
-                clean["id"] = str(rule.get("id") or "").strip()
-                clean["pattern"] = str(rule.get("pattern") or "").strip()
-                clean["reply"] = str(rule.get("reply") or "").strip()
-                clean_rules.append(clean)
-        return clean_rules
+        return [normalize_rule(rule) for rule in load_whatsapp_rules()]
 
     def write_rules(self, rules: list[dict[str, Any]]) -> None:
-        WHATSAPP_REPLY_RULES.write_text(json.dumps(rules, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        write_whatsapp_rules(rules)
 
     def refresh(self) -> None:
-        rows = [[rule["id"], rule["pattern"], self.action_summary(rule), rule["reply"]] for rule in self.load_rules()]
-        set_table_rows(self.table, ["ID", "Pattern", "Action", "Reply"], rows)
-
-    @staticmethod
-    def action_summary(rule: dict[str, Any]) -> str:
-        action = rule.get("action")
-        if isinstance(action, dict):
-            action_type = str(action.get("type") or "reply")
-            provider = action.get("provider")
-            tool_id = action.get("tool_id")
-            suffix = f":{provider}" if provider else f":{tool_id}" if tool_id else ""
-            return action_type + suffix
-        if isinstance(action, str) and action.strip():
-            return action.strip()
-        return "reply"
+        rows = [
+            [
+                rule["id"],
+                "On" if rule.get("enabled", True) else "Off",
+                whatsapp_audience_summary(rule),
+                whatsapp_trigger_summary(rule),
+                whatsapp_action_summary(rule),
+            ]
+            for rule in self.load_rules()
+        ]
+        set_table_rows(self.table, ["ID", "State", "Audience", "Triggers", "Actions"], rows)
+        self.refresh_builder_tables()
 
     def load_selected(self) -> None:
         row = self.table.currentRow()
         if row < 0:
             return
         self.id_input.setText(self.table.item(row, 0).text() if self.table.item(row, 0) else "")
-        self.pattern_input.setText(self.table.item(row, 1).text() if self.table.item(row, 1) else "")
         rule_id = self.id_input.text()
         rule = next((item for item in self.load_rules() if item.get("id") == rule_id), {})
-        self.reply_input.setPlainText(str(rule.get("reply") or ""))
-        action = rule.get("action")
-        self.action_input.setPlainText(json.dumps(action, indent=2, ensure_ascii=False) if isinstance(action, dict) else str(action or ""))
+        if not rule:
+            return
+        self.name_input.setText(str(rule.get("name") or rule_id))
+        self.enabled_check.setChecked(bool(rule.get("enabled", True)))
+        self.trigger_logic.setCurrentIndex(1 if str(rule.get("trigger_logic")) == "all" else 0)
+        audience = rule.get("audience") if isinstance(rule.get("audience"), dict) else {"scope": "everyone", "contacts": []}
+        scope = str(audience.get("scope") or "everyone")
+        for index in range(self.audience_scope.count()):
+            if self.audience_scope.itemData(index) == scope:
+                self.audience_scope.setCurrentIndex(index)
+                break
+        self.contacts_input.setPlainText(contacts_to_text(audience.get("contacts", [])))
+        self.current_triggers = [dict(trigger) for trigger in rule.get("triggers", []) if isinstance(trigger, dict)]
+        self.current_actions = [dict(action) for action in rule.get("actions", []) if isinstance(action, dict)]
+        self.refresh_builder_tables()
+
+    def _build_trigger_stack(self) -> None:
+        message_page = QWidget()
+        message_layout = QGridLayout(message_page)
+        self.message_match = QComboBox()
+        for label, value in [("Contains", "contains"), ("Regex", "regex"), ("Equals", "equals"), ("Starts with", "starts_with"), ("Ends with", "ends_with"), ("Any message", "any")]:
+            self.message_match.addItem(label, value)
+        self.message_value = QLineEdit()
+        self.message_value.setPlaceholderText(r"Example: project status or ^\s*hello\b")
+        message_layout.addWidget(QLabel("Match"), 0, 0)
+        message_layout.addWidget(self.message_match, 0, 1)
+        message_layout.addWidget(QLabel("Text"), 1, 0)
+        message_layout.addWidget(self.message_value, 1, 1)
+
+        call_page = QWidget()
+        call_layout = QGridLayout(call_page)
+        self.call_type = QComboBox()
+        self.call_type.addItem("Any direct call", "any")
+        self.call_type.addItem("Incoming call", "incoming")
+        call_layout.addWidget(QLabel("Call trigger"), 0, 0)
+        call_layout.addWidget(self.call_type, 0, 1)
+
+        time_page = QWidget()
+        time_layout = QGridLayout(time_page)
+        self.time_operator = QComboBox()
+        for label, value in [("At", "at"), ("After", "after"), ("Before", "before"), ("Between", "between")]:
+            self.time_operator.addItem(label, value)
+        self.time_value = QTimeEdit()
+        self.time_value.setDisplayFormat("h:mm AP")
+        self.time_value.setTime(QTime.currentTime())
+        self.time_end = QTimeEdit()
+        self.time_end.setDisplayFormat("h:mm AP")
+        self.time_end.setTime(QTime.currentTime().addSecs(3600))
+        self.time_days = QLineEdit()
+        self.time_days.setPlaceholderText("Optional: Mon Tue Wed")
+        self.time_operator.currentIndexChanged.connect(self.update_time_operator)
+        time_layout.addWidget(QLabel("When"), 0, 0)
+        time_layout.addWidget(self.time_operator, 0, 1)
+        time_layout.addWidget(QLabel("Time"), 1, 0)
+        time_layout.addWidget(self.time_value, 1, 1)
+        time_layout.addWidget(QLabel("End"), 1, 2)
+        time_layout.addWidget(self.time_end, 1, 3)
+        time_layout.addWidget(QLabel("Days"), 2, 0)
+        time_layout.addWidget(self.time_days, 2, 1, 1, 3)
+
+        date_page = QWidget()
+        date_layout = QGridLayout(date_page)
+        self.date_operator = QComboBox()
+        for label, value in [("On", "on"), ("After", "after"), ("Before", "before"), ("Between", "between")]:
+            self.date_operator.addItem(label, value)
+        self.date_value = QDateEdit()
+        self.date_value.setDisplayFormat("yyyy-MM-dd")
+        self.date_value.setCalendarPopup(True)
+        self.date_value.setDate(QDate.currentDate())
+        self.date_end = QDateEdit()
+        self.date_end.setDisplayFormat("yyyy-MM-dd")
+        self.date_end.setCalendarPopup(True)
+        self.date_end.setDate(QDate.currentDate())
+        self.date_operator.currentIndexChanged.connect(self.update_date_operator)
+        date_layout.addWidget(QLabel("When"), 0, 0)
+        date_layout.addWidget(self.date_operator, 0, 1)
+        date_layout.addWidget(QLabel("Date"), 1, 0)
+        date_layout.addWidget(self.date_value, 1, 1)
+        date_layout.addWidget(QLabel("End"), 1, 2)
+        date_layout.addWidget(self.date_end, 1, 3)
+
+        self.trigger_stack.addWidget(message_page)
+        self.trigger_stack.addWidget(call_page)
+        self.trigger_stack.addWidget(time_page)
+        self.trigger_stack.addWidget(date_page)
+        self.update_time_operator()
+        self.update_date_operator()
+
+    def _build_action_stack(self) -> None:
+        reply_page = QWidget()
+        reply_layout = QVBoxLayout(reply_page)
+        self.reply_text = QPlainTextEdit()
+        self.reply_text.setPlaceholderText("WhatsApp reply text. You can use {message}, {chat}, {time}, and regex groups.")
+        self.reply_text.setMaximumHeight(92)
+        reply_layout.addWidget(self.reply_text)
+
+        assistant_page = QWidget()
+        assistant_layout = QVBoxLayout(assistant_page)
+        self.assistant_prompt = QPlainTextEdit()
+        self.assistant_prompt.setPlaceholderText("Example: project status")
+        self.assistant_prompt.setMaximumHeight(92)
+        assistant_layout.addWidget(self.assistant_prompt)
+
+        ai_page = QWidget()
+        ai_layout = QGridLayout(ai_page)
+        self.ai_provider = QComboBox()
+        for label, value in [("Auto brain", "auto"), ("Research", "research"), ("Gemini", "gemini"), ("Codex", "codex")]:
+            self.ai_provider.addItem(label, value)
+        self.ai_prompt = QPlainTextEdit()
+        self.ai_prompt.setPlaceholderText("Prompt for AI. Use {message} for the incoming WhatsApp text.")
+        self.ai_prompt.setMaximumHeight(92)
+        ai_layout.addWidget(QLabel("Provider"), 0, 0)
+        ai_layout.addWidget(self.ai_provider, 0, 1)
+        ai_layout.addWidget(QLabel("Prompt"), 1, 0)
+        ai_layout.addWidget(self.ai_prompt, 1, 1)
+
+        tool_page = QWidget()
+        tool_layout = QGridLayout(tool_page)
+        self.tool_combo = QComboBox()
+        tools = ToolRegistry(self.storage).list_tools()
+        if tools:
+            for tool in tools:
+                self.tool_combo.addItem(str(tool.get("name") or tool["id"]), tool["id"])
+        else:
+            self.tool_combo.addItem("No safe tools configured", "")
+        self.tool_command_index = QSpinBox()
+        self.tool_command_index.setRange(0, 20)
+        self.tool_summarize = QComboBox()
+        self.tool_summarize.addItem("No summary", "")
+        self.tool_summarize.addItem("Auto brain summary", "auto")
+        self.tool_summarize.addItem("Gemini summary", "gemini")
+        self.tool_summarize.addItem("Codex summary", "codex")
+        self.tool_summary_prompt = QPlainTextEdit()
+        self.tool_summary_prompt.setPlaceholderText("Summarize this tool result for a concise WhatsApp reply.")
+        self.tool_summary_prompt.setMaximumHeight(76)
+        tool_layout.addWidget(QLabel("Tool"), 0, 0)
+        tool_layout.addWidget(self.tool_combo, 0, 1)
+        tool_layout.addWidget(QLabel("Command index"), 1, 0)
+        tool_layout.addWidget(self.tool_command_index, 1, 1)
+        tool_layout.addWidget(QLabel("Summarize"), 2, 0)
+        tool_layout.addWidget(self.tool_summarize, 2, 1)
+        tool_layout.addWidget(QLabel("Summary prompt"), 3, 0)
+        tool_layout.addWidget(self.tool_summary_prompt, 3, 1)
+
+        log_page = QWidget()
+        log_layout = QVBoxLayout(log_page)
+        self.log_text = QPlainTextEdit()
+        self.log_text.setPlaceholderText("Activity log note")
+        self.log_text.setMaximumHeight(82)
+        log_layout.addWidget(self.log_text)
+
+        self.action_stack.addWidget(reply_page)
+        self.action_stack.addWidget(assistant_page)
+        self.action_stack.addWidget(ai_page)
+        self.action_stack.addWidget(tool_page)
+        self.action_stack.addWidget(log_page)
+
+    def update_trigger_editor(self) -> None:
+        self.trigger_stack.setCurrentIndex(self.trigger_type.currentIndex())
+
+    def update_action_editor(self) -> None:
+        self.action_stack.setCurrentIndex(self.action_type.currentIndex())
+
+    def update_time_operator(self) -> None:
+        self.time_end.setEnabled(self.time_operator.currentData() == "between")
+
+    def update_date_operator(self) -> None:
+        self.date_end.setEnabled(self.date_operator.currentData() == "between")
+
+    def add_trigger(self) -> None:
+        trigger_type = str(self.trigger_type.currentData() or "message")
+        trigger: dict[str, Any]
+        if trigger_type == "message":
+            match_type = str(self.message_match.currentData() or "contains")
+            value = self.message_value.text().strip()
+            if match_type != "any" and not value:
+                QMessageBox.information(self, "WhatsApp Rule", "Message trigger text is required.")
+                return
+            if match_type == "regex":
+                try:
+                    re.compile(value)
+                except re.error as exc:
+                    QMessageBox.warning(self, "WhatsApp Rule", f"Regex trigger is not valid: {exc}")
+                    return
+            trigger = {"type": "message", "match": match_type, "value": value}
+        elif trigger_type == "call":
+            trigger = {"type": "call", "call_type": str(self.call_type.currentData() or "any")}
+        elif trigger_type == "time":
+            operator = str(self.time_operator.currentData() or "at")
+            trigger = {"type": "time", "operator": operator}
+            if operator == "between":
+                trigger["start"] = self.time_value.time().toString("h:mm AP")
+                trigger["end"] = self.time_end.time().toString("h:mm AP")
+            else:
+                trigger["time"] = self.time_value.time().toString("h:mm AP")
+            days = [item.strip() for item in re.split(r"[,;\s]+", self.time_days.text()) if item.strip()]
+            if days:
+                trigger["days"] = days
+        else:
+            operator = str(self.date_operator.currentData() or "on")
+            trigger = {"type": "date", "operator": operator}
+            if operator == "between":
+                trigger["start"] = self.date_value.date().toString("yyyy-MM-dd")
+                trigger["end"] = self.date_end.date().toString("yyyy-MM-dd")
+            else:
+                trigger["date"] = self.date_value.date().toString("yyyy-MM-dd")
+        self.current_triggers.append(trigger)
+        self.refresh_builder_tables()
+
+    def remove_trigger(self) -> None:
+        row = self.triggers_table.currentRow()
+        if 0 <= row < len(self.current_triggers):
+            self.current_triggers.pop(row)
+            self.refresh_builder_tables()
+
+    def add_action(self) -> None:
+        action_type = str(self.action_type.currentData() or "reply")
+        action: dict[str, Any]
+        if action_type == "reply":
+            text = self.reply_text.toPlainText().strip()
+            if not text:
+                QMessageBox.information(self, "WhatsApp Rule", "Reply text is required.")
+                return
+            action = {"type": "reply", "text": text}
+        elif action_type == "assistant":
+            prompt = self.assistant_prompt.toPlainText().strip() or "{message}"
+            action = {"type": "assistant", "prompt": prompt}
+        elif action_type == "ai":
+            prompt = self.ai_prompt.toPlainText().strip() or "{message}"
+            action = {"type": "ai", "provider": str(self.ai_provider.currentData() or "auto"), "prompt": prompt}
+        elif action_type == "tool":
+            tool_id = str(self.tool_combo.currentData() or "")
+            if not tool_id:
+                QMessageBox.information(self, "WhatsApp Rule", "Select a safe tool first.")
+                return
+            action = {"type": "tool", "tool_id": tool_id, "command_index": self.tool_command_index.value()}
+            summarize_with = str(self.tool_summarize.currentData() or "")
+            if summarize_with:
+                action["summarize_with"] = summarize_with
+                action["summary_prompt"] = self.tool_summary_prompt.toPlainText().strip() or "Summarize this tool result for a concise WhatsApp reply."
+        else:
+            action = {"type": "log", "prompt": self.log_text.toPlainText().strip() or "WhatsApp rule matched."}
+        self.current_actions.append(action)
+        self.refresh_builder_tables()
+
+    def remove_action(self) -> None:
+        row = self.actions_table.currentRow()
+        if 0 <= row < len(self.current_actions):
+            self.current_actions.pop(row)
+            self.refresh_builder_tables()
+
+    def refresh_builder_tables(self) -> None:
+        trigger_rows = []
+        for trigger in self.current_triggers:
+            trigger_rows.append([self.trigger_type_label(trigger), self.trigger_detail(trigger)])
+        set_table_rows(self.triggers_table, ["Type", "Condition"], trigger_rows)
+        action_rows = []
+        for action in self.current_actions:
+            action_rows.append([whatsapp_action_summary({"actions": [action]}), self.action_detail(action)])
+        set_table_rows(self.actions_table, ["Action", "Details"], action_rows)
+
+    @staticmethod
+    def trigger_type_label(trigger: dict[str, Any]) -> str:
+        labels = {"message": "Message", "call": "Call", "time": "Time", "date": "Date"}
+        return labels.get(str(trigger.get("type") or "message"), "Trigger")
+
+    @staticmethod
+    def trigger_detail(trigger: dict[str, Any]) -> str:
+        trigger_type = str(trigger.get("type") or "message")
+        if trigger_type == "message":
+            match_type = str(trigger.get("match") or "contains").replace("_", " ")
+            value = str(trigger.get("value") or "")
+            return f"{match_type}: {value}" if value else match_type
+        if trigger_type == "call":
+            return str(trigger.get("call_type") or "any")
+        if trigger_type == "time":
+            operator = str(trigger.get("operator") or "at")
+            if operator == "between":
+                value = f"{trigger.get('start') or ''} to {trigger.get('end') or ''}"
+            else:
+                value = str(trigger.get("time") or "")
+            days = trigger.get("days")
+            suffix = f" on {', '.join(days)}" if isinstance(days, list) and days else ""
+            return f"{operator} {value}{suffix}".strip()
+        if trigger_type == "date":
+            operator = str(trigger.get("operator") or "on")
+            if operator == "between":
+                value = f"{trigger.get('start') or ''} to {trigger.get('end') or ''}"
+            else:
+                value = str(trigger.get("date") or "")
+            return f"{operator} {value}".strip()
+        return ""
+
+    @staticmethod
+    def action_detail(action: dict[str, Any]) -> str:
+        action_type = str(action.get("type") or "reply")
+        if action_type == "reply":
+            return str(action.get("text") or "")[:160]
+        if action_type in {"assistant", "brain", "ai", "research", "gemini", "codex"}:
+            provider = f"{action.get('provider')}: " if action.get("provider") else ""
+            return provider + str(action.get("prompt") or "{message}")[:160]
+        if action_type in {"tool", "safe_tool"}:
+            summary = f", summarize with {action.get('summarize_with')}" if action.get("summarize_with") else ""
+            return f"{action.get('tool_id')}, command {action.get('command_index', 0)}{summary}"
+        return str(action.get("prompt") or action.get("text") or "")[:160]
+
+    def new_rule(self) -> None:
+        self.id_input.clear()
+        self.name_input.clear()
+        self.enabled_check.setChecked(True)
+        self.trigger_logic.setCurrentIndex(0)
+        self.audience_scope.setCurrentIndex(0)
+        self.contacts_input.clear()
+        self.current_triggers = []
+        self.current_actions = []
+        self.refresh_builder_tables()
 
     def save_rule(self) -> None:
         rule_id = self.id_input.text().strip()
-        pattern = self.pattern_input.text().strip()
-        reply = self.reply_input.toPlainText().strip()
-        action_text = self.action_input.toPlainText().strip()
-        if not rule_id or not pattern or (not reply and not action_text):
-            QMessageBox.information(self, "WhatsApp Rule", "Rule ID, pattern, and either reply or action JSON are required.")
+        name = self.name_input.text().strip() or rule_id
+        if not rule_id or not re.fullmatch(r"[A-Za-z0-9_-]+", rule_id):
+            QMessageBox.information(self, "WhatsApp Rule", "Use a Rule ID with letters, numbers, dash, or underscore.")
             return
-        try:
-            re.compile(pattern)
-        except re.error as exc:
-            QMessageBox.warning(self, "WhatsApp Rule", f"Pattern is not valid regex: {exc}")
+        if not self.current_triggers:
+            QMessageBox.information(self, "WhatsApp Rule", "Add at least one trigger.")
             return
-        action: Any = None
-        if action_text:
-            try:
-                action = json.loads(action_text)
-            except json.JSONDecodeError:
-                action = action_text
-            if not isinstance(action, (dict, str)):
-                QMessageBox.warning(self, "WhatsApp Rule", "Action JSON must be an object or string.")
-                return
-            if isinstance(action, dict) and not action:
-                QMessageBox.warning(self, "WhatsApp Rule", "Action JSON cannot be an empty object.")
-                return
+        if not self.current_actions:
+            QMessageBox.information(self, "WhatsApp Rule", "Add at least one action.")
+            return
+        scope = str(self.audience_scope.currentData() or "everyone")
+        contacts = contacts_from_text(self.contacts_input.toPlainText())
+        if scope in {"contacts", "except_contacts"} and not contacts:
+            QMessageBox.information(self, "WhatsApp Rule", "Add at least one contact for this audience.")
+            return
+        trigger_types = {str(trigger.get("type") or "message") for trigger in self.current_triggers}
+        exact_time = any(str(trigger.get("type")) == "time" and str(trigger.get("operator") or "at") == "at" for trigger in self.current_triggers)
+        autonomous_schedule = "time" in trigger_types and "message" not in trigger_types and "call" not in trigger_types and exact_time
+        if autonomous_schedule and scope != "contacts":
+            QMessageBox.information(self, "WhatsApp Rule", "Scheduled time/date rules need specific contacts.")
+            return
+        for trigger in self.current_triggers:
+            if trigger.get("type") == "message" and trigger.get("match") == "regex":
+                try:
+                    re.compile(str(trigger.get("value") or ""))
+                except re.error as exc:
+                    QMessageBox.warning(self, "WhatsApp Rule", f"Regex trigger is not valid: {exc}")
+                    return
         rules = [rule for rule in self.load_rules() if rule["id"] != rule_id]
-        new_rule: dict[str, Any] = {"id": rule_id, "pattern": pattern}
-        if reply:
-            new_rule["reply"] = reply
-        if action is not None:
-            new_rule["action"] = action
+        new_rule: dict[str, Any] = {
+            "id": rule_id,
+            "name": name,
+            "enabled": self.enabled_check.isChecked(),
+            "trigger_logic": self.trigger_logic.currentData() or "any",
+            "audience": {"scope": scope, "contacts": contacts},
+            "triggers": self.current_triggers,
+            "actions": self.current_actions,
+        }
         rules.append(new_rule)
         self.write_rules(rules)
-        self.storage.log("info", "WhatsApp Rules", f"Saved WhatsApp reply rule: {rule_id}")
+        self.storage.log("info", "WhatsApp Rules", f"Saved WhatsApp rule: {rule_id}")
         self.refresh()
 
     def delete_rule(self) -> None:
@@ -1419,20 +1802,15 @@ class WhatsAppRulesPage(BasePage):
             return
         rules = [rule for rule in self.load_rules() if rule["id"] != rule_id]
         self.write_rules(rules)
-        self.storage.log("info", "WhatsApp Rules", f"Deleted WhatsApp reply rule: {rule_id}")
+        self.storage.log("info", "WhatsApp Rules", f"Deleted WhatsApp rule: {rule_id}")
+        self.new_rule()
         self.refresh()
 
-    def test_pattern(self) -> None:
+    def test_rule(self) -> None:
         sample, ok = QInputDialog.getMultiLineText(self, "WhatsApp Rule Test", "Incoming message")
         if not ok:
             return
-        matches = []
-        for rule in self.load_rules():
-            try:
-                if rule["pattern"] and re.search(rule["pattern"], sample, flags=re.IGNORECASE):
-                    matches.append(f"{rule['id']}: {self.action_summary(rule)} -> {rule.get('reply') or rule.get('action')}")
-            except re.error:
-                matches.append(f"{rule['id']}: invalid pattern")
+        matches = WhatsAppWebService(self.storage).preview_matches(sample)
         self.output.setPlainText("\n".join(matches) if matches else "No WhatsApp rule matched.")
 
 
@@ -1856,6 +2234,7 @@ class SettingsPage(BasePage):
             "enabled": self.whatsapp_auto_enabled.isChecked(),
             "poll_seconds": self.whatsapp_auto_poll.value(),
             "skip_groups": self.whatsapp_skip_groups.isChecked(),
+            "fallback_scan_enabled": bool(existing_auto_reply.get("fallback_scan_enabled", False)),
             "activity_baseline_ready": bool(existing_auto_reply.get("activity_baseline_ready", False)),
             "activity_baseline_hashes": existing_auto_reply.get("activity_baseline_hashes", []),
         }

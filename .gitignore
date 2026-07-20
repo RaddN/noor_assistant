@@ -13,6 +13,7 @@ data/whatsapp-web-profile/
 data/codex-sessions/
 data/whatsapp-webjs-auth/
 data/whatsapp-web-bridge/
+data/qa/
 logs/
 browser-profiles/
 config/local_settings.json

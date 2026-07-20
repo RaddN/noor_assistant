@@ -1,103 +1,307 @@
 [
   {
     "id": "greeting",
-    "pattern": "^\\s*(hi|hello|hey|assalamu alaikum|assalamualaikum|salam)\\b",
-    "reply": "Hello. I am Noor, Raihan Hossain's assistant. Send a supported command or question and I will handle it."
+    "name": "Greeting",
+    "enabled": true,
+    "trigger_logic": "any",
+    "audience": {
+      "scope": "everyone",
+      "contacts": []
+    },
+    "triggers": [
+      {
+        "type": "message",
+        "match": "regex",
+        "value": "^\\s*(hi|hello|hey|assalamu alaikum|assalamualaikum|salam)\\b"
+      }
+    ],
+    "actions": [
+      {
+        "type": "reply",
+        "text": "Hello. I am Noor, Raihan Hossain's assistant. Send a supported command or question and I will handle it."
+      }
+    ]
   },
   {
     "id": "availability",
-    "pattern": "\\b(are you there|available|free now)\\b",
-    "reply": "I am here. Send a supported command and I will handle it for Raihan Hossain."
+    "name": "Availability",
+    "enabled": true,
+    "trigger_logic": "any",
+    "audience": {
+      "scope": "everyone",
+      "contacts": []
+    },
+    "triggers": [
+      {
+        "type": "message",
+        "match": "regex",
+        "value": "\\b(are you there|available|free now)\\b"
+      }
+    ],
+    "actions": [
+      {
+        "type": "reply",
+        "text": "I am here. Send a supported command and I will handle it for Raihan Hossain."
+      }
+    ]
   },
   {
     "id": "find-phone",
-    "pattern": "\\b(find|ring|locate)\\s+(my\\s+)?phone\\b",
-    "action": {
-      "type": "assistant",
-      "prompt": "find my phone"
-    }
+    "name": "Find My Phone command",
+    "enabled": true,
+    "trigger_logic": "any",
+    "audience": {
+      "scope": "everyone",
+      "contacts": []
+    },
+    "triggers": [
+      {
+        "type": "message",
+        "match": "regex",
+        "value": "\\b(find|ring|locate)\\s+(my\\s+)?phone\\b"
+      }
+    ],
+    "actions": [
+      {
+        "type": "assistant",
+        "prompt": "find my phone"
+      }
+    ]
   },
   {
     "id": "whatsapp-status",
-    "pattern": "\\b(whatsapp|wa)\\s+(status|connection)\\b",
-    "action": {
-      "type": "assistant",
-      "prompt": "WhatsApp status"
-    }
+    "name": "WhatsApp status",
+    "enabled": true,
+    "trigger_logic": "any",
+    "audience": {
+      "scope": "everyone",
+      "contacts": []
+    },
+    "triggers": [
+      {
+        "type": "message",
+        "match": "regex",
+        "value": "\\b(whatsapp|wa)\\s+(status|connection)\\b"
+      }
+    ],
+    "actions": [
+      {
+        "type": "assistant",
+        "prompt": "WhatsApp status"
+      }
+    ]
   },
   {
     "id": "project-status",
-    "pattern": "\\b(project|projects)\\b.*\\b(status|progress|update)\\b|\\b(status|progress|update)\\b.*\\b(project|projects)\\b",
-    "action": {
-      "type": "assistant",
-      "prompt": "project status"
-    }
+    "name": "Project status",
+    "enabled": true,
+    "trigger_logic": "any",
+    "audience": {
+      "scope": "everyone",
+      "contacts": []
+    },
+    "triggers": [
+      {
+        "type": "message",
+        "match": "regex",
+        "value": "\\b(project|projects)\\b.*\\b(status|progress|update)\\b|\\b(status|progress|update)\\b.*\\b(project|projects)\\b"
+      }
+    ],
+    "actions": [
+      {
+        "type": "assistant",
+        "prompt": "project status"
+      }
+    ]
   },
   {
     "id": "tool-status",
-    "pattern": "\\b(tool|tools|connected tools)\\b.*\\b(status|check|available)\\b|\\b(status|check)\\b.*\\b(tool|tools|connected tools)\\b",
-    "action": {
-      "type": "assistant",
-      "prompt": "tool status"
-    }
+    "name": "Tool status",
+    "enabled": true,
+    "trigger_logic": "any",
+    "audience": {
+      "scope": "everyone",
+      "contacts": []
+    },
+    "triggers": [
+      {
+        "type": "message",
+        "match": "regex",
+        "value": "\\b(tool|tools|connected tools)\\b.*\\b(status|check|available)\\b|\\b(status|check)\\b.*\\b(tool|tools|connected tools)\\b"
+      }
+    ],
+    "actions": [
+      {
+        "type": "assistant",
+        "prompt": "tool status"
+      }
+    ]
   },
   {
     "id": "google-status",
-    "pattern": "\\b(google|calendar|task|tasks|todo|todos)\\b.*\\b(status|check|upcoming|due)\\b",
-    "action": {
-      "type": "assistant",
-      "prompt": "{message}"
-    }
+    "name": "Google productivity status",
+    "enabled": true,
+    "trigger_logic": "any",
+    "audience": {
+      "scope": "everyone",
+      "contacts": []
+    },
+    "triggers": [
+      {
+        "type": "message",
+        "match": "regex",
+        "value": "\\b(google|calendar|task|tasks|todo|todos)\\b.*\\b(status|check|upcoming|due)\\b"
+      }
+    ],
+    "actions": [
+      {
+        "type": "assistant",
+        "prompt": "{message}"
+      }
+    ]
   },
   {
     "id": "research-question",
-    "pattern": "^\\s*(research|search)\\s+(?P<query>.+)",
-    "action": {
-      "type": "assistant",
-      "prompt": "research {query}"
-    }
+    "name": "Research request",
+    "enabled": true,
+    "trigger_logic": "any",
+    "audience": {
+      "scope": "everyone",
+      "contacts": []
+    },
+    "triggers": [
+      {
+        "type": "message",
+        "match": "regex",
+        "value": "^\\s*(research|search)\\s+(?P<query>.+)"
+      }
+    ],
+    "actions": [
+      {
+        "type": "assistant",
+        "prompt": "research {query}"
+      }
+    ]
   },
   {
     "id": "ask-noor-ai",
-    "pattern": "^\\s*(ask noor|answer|question)[:\\s]+(?P<question>.+)",
-    "action": {
-      "type": "ai",
-      "provider": "auto",
-      "prompt": "{question}"
-    }
+    "name": "Ask Noor AI",
+    "enabled": true,
+    "trigger_logic": "any",
+    "audience": {
+      "scope": "everyone",
+      "contacts": []
+    },
+    "triggers": [
+      {
+        "type": "message",
+        "match": "regex",
+        "value": "^\\s*(ask noor|answer|question)[:\\s]+(?P<question>.+)"
+      }
+    ],
+    "actions": [
+      {
+        "type": "ai",
+        "provider": "auto",
+        "prompt": "{question}"
+      }
+    ]
   },
   {
     "id": "ask-gemini",
-    "pattern": "^\\s*(gemini|ask gemini)[:\\s]+(?P<question>.+)",
-    "action": {
-      "type": "ai",
-      "provider": "gemini",
-      "prompt": "{question}"
-    }
+    "name": "Ask Gemini",
+    "enabled": true,
+    "trigger_logic": "any",
+    "audience": {
+      "scope": "everyone",
+      "contacts": []
+    },
+    "triggers": [
+      {
+        "type": "message",
+        "match": "regex",
+        "value": "^\\s*(gemini|ask gemini)[:\\s]+(?P<question>.+)"
+      }
+    ],
+    "actions": [
+      {
+        "type": "ai",
+        "provider": "gemini",
+        "prompt": "{question}"
+      }
+    ]
   },
   {
     "id": "ask-codex",
-    "pattern": "^\\s*(codex|ask codex)[:\\s]+(?P<question>.+)",
-    "action": {
-      "type": "ai",
-      "provider": "codex",
-      "prompt": "{question}"
-    }
+    "name": "Ask Codex",
+    "enabled": true,
+    "trigger_logic": "any",
+    "audience": {
+      "scope": "everyone",
+      "contacts": []
+    },
+    "triggers": [
+      {
+        "type": "message",
+        "match": "regex",
+        "value": "^\\s*(codex|ask codex)[:\\s]+(?P<question>.+)"
+      }
+    ],
+    "actions": [
+      {
+        "type": "ai",
+        "provider": "codex",
+        "prompt": "{question}"
+      }
+    ]
   },
   {
     "id": "content-review-dry-run",
-    "pattern": "\\b(content review|content-review-manager)\\b.*\\b(dry run|test|check)\\b",
-    "action": {
-      "type": "tool",
-      "tool_id": "content-review-manager",
-      "command_index": 0,
-      "summarize_with": "auto",
-      "summary_prompt": "Summarize this content-review-manager dry-run output for a concise WhatsApp reply."
-    }
+    "name": "Content review dry run",
+    "enabled": true,
+    "trigger_logic": "any",
+    "audience": {
+      "scope": "everyone",
+      "contacts": []
+    },
+    "triggers": [
+      {
+        "type": "message",
+        "match": "regex",
+        "value": "\\b(content review|content-review-manager)\\b.*\\b(dry run|test|check)\\b"
+      }
+    ],
+    "actions": [
+      {
+        "type": "tool",
+        "tool_id": "content-review-manager",
+        "command_index": 0,
+        "summarize_with": "auto",
+        "summary_prompt": "Summarize this content-review-manager dry-run output for a concise WhatsApp reply."
+      }
+    ]
   },
   {
     "id": "thanks",
-    "pattern": "\\b(thanks|thank you|jazakallah)\\b",
-    "reply": "You are welcome."
+    "name": "Thanks",
+    "enabled": true,
+    "trigger_logic": "any",
+    "audience": {
+      "scope": "everyone",
+      "contacts": []
+    },
+    "triggers": [
+      {
+        "type": "message",
+        "match": "regex",
+        "value": "\\b(thanks|thank you|jazakallah)\\b"
+      }
+    ],
+    "actions": [
+      {
+        "type": "reply",
+        "text": "You are welcome."
+      }
+    ]
   }
 ]
