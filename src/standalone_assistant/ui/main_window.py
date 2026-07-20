@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QPushButton,
     QPlainTextEdit,
@@ -1303,9 +1304,87 @@ class WhatsAppRulesPage(BasePage):
         super().__init__(storage)
         self.current_triggers: list[dict[str, Any]] = []
         self.current_actions: list[dict[str, Any]] = []
+        self.editor_rule_id = ""
+        self.visible_rule_ids: list[str] = []
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(18, 16, 18, 16)
+        layout.setSpacing(10)
+
+        toolbar = QFrame()
+        toolbar.setObjectName("rulesToolbar")
+        toolbar_layout = QHBoxLayout(toolbar)
+        toolbar_layout.setContentsMargins(10, 8, 10, 8)
+        toolbar_layout.setSpacing(8)
+        self.search_input = QLineEdit()
+        self.search_input.setPlaceholderText("Search rules, triggers, contacts, or actions")
+        self.search_input.addAction(QIcon(str(ICON_DIR / "search.svg")), QLineEdit.LeadingPosition)
+        self.search_input.textChanged.connect(self.refresh)
+        self.state_filter = QComboBox()
+        self.state_filter.addItem("All states", "all")
+        self.state_filter.addItem("Enabled", "enabled")
+        self.state_filter.addItem("Disabled", "disabled")
+        self.state_filter.currentIndexChanged.connect(self.refresh)
+        self.trigger_filter = QComboBox()
+        for label, value in [("All triggers", "all"), ("Message", "message"), ("Call", "call"), ("Time", "time"), ("Date", "date")]:
+            self.trigger_filter.addItem(label, value)
+        self.trigger_filter.currentIndexChanged.connect(self.refresh)
+        self.action_filter = QComboBox()
+        for label, value in [("All actions", "all"), ("Reply", "reply"), ("Noor brain", "assistant"), ("AI", "ai"), ("Tool", "tool"), ("Log", "log")]:
+            self.action_filter.addItem(label, value)
+        self.action_filter.currentIndexChanged.connect(self.refresh)
+        toolbar_layout.addWidget(self.search_input, 2)
+        toolbar_layout.addWidget(self.state_filter)
+        toolbar_layout.addWidget(self.trigger_filter)
+        toolbar_layout.addWidget(self.action_filter)
+        toolbar_layout.addSpacing(8)
+        toolbar_layout.addWidget(self._tool_button("Add", "plus.svg", self.show_new_rule_editor, "Add new WhatsApp rule", primary=True))
+        toolbar_layout.addWidget(self._tool_button("Edit", "edit.svg", self.edit_selected_rule, "Edit selected rule"))
+        toolbar_layout.addWidget(self._tool_button("Enable", "check.svg", lambda: self.bulk_set_enabled(True), "Enable selected rules"))
+        toolbar_layout.addWidget(self._tool_button("Disable", "pause.svg", lambda: self.bulk_set_enabled(False), "Disable selected rules"))
+        toolbar_layout.addWidget(self._tool_button("Delete", "trash.svg", self.delete_selected_rules, "Delete selected rules"))
+        toolbar_layout.addWidget(self._tool_button("Refresh", "refresh.svg", self.refresh, "Refresh rules"))
+        more_menu = QMenu(self)
+        test_action = QAction(QIcon(str(ICON_DIR / "test.svg")), "Test Message", self)
+        test_action.triggered.connect(self.test_rule)
+        duplicate_action = QAction(QIcon(str(ICON_DIR / "plus.svg")), "Duplicate Selected", self)
+        duplicate_action.triggered.connect(self.duplicate_selected_rule)
+        more_menu.addAction(test_action)
+        more_menu.addAction(duplicate_action)
+        self.more_button = self._tool_button("More", "more.svg", None, "More rule actions")
+        self.more_button.setMenu(more_menu)
+        self.more_button.setPopupMode(QToolButton.InstantPopup)
+        toolbar_layout.addWidget(self.more_button)
+
+        self.summary_label = QLabel()
+        self.summary_label.setObjectName("rulesMetric")
+
+        self.table = QTableWidget()
+        self.table.setObjectName("rulesTable")
+        configure_table(self.table)
+        self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.table.setSortingEnabled(True)
+        self.table.itemSelectionChanged.connect(self.update_bulk_status)
+        self.table.itemDoubleClicked.connect(self._edit_from_table_item)
+
+        self.editor_panel = QFrame()
+        self.editor_panel.setObjectName("ruleEditorPanel")
+        editor_layout = QVBoxLayout(self.editor_panel)
+        editor_layout.setContentsMargins(12, 10, 12, 12)
+        editor_layout.setSpacing(8)
+
+        editor_header = QHBoxLayout()
+        self.editor_title = QLabel("New WhatsApp Rule")
+        self.editor_title.setObjectName("ruleEditorTitle")
+        editor_header.addWidget(self.editor_title)
+        editor_header.addStretch()
+        editor_header.addWidget(self._tool_button("Save", "check.svg", self.save_rule, "Save rule", primary=True))
+        editor_header.addWidget(self._tool_button("Test", "test.svg", self.test_rule, "Test message against rules"))
+        editor_header.addWidget(self._tool_button("Close", "close.svg", self.close_editor, "Close editor"))
+        editor_layout.addLayout(editor_header)
 
         top = QGridLayout()
+        top.setHorizontalSpacing(8)
+        top.setVerticalSpacing(6)
         self.id_input = QLineEdit()
         self.id_input.setPlaceholderText("project-status")
         self.name_input = QLineEdit()
@@ -1322,6 +1401,7 @@ class WhatsAppRulesPage(BasePage):
         top.addWidget(self.enabled_check, 0, 4)
         top.addWidget(QLabel("Trigger logic"), 1, 0)
         top.addWidget(self.trigger_logic, 1, 1, 1, 2)
+        editor_layout.addLayout(top)
 
         audience_box = QGroupBox("Audience")
         audience_layout = QGridLayout(audience_box)
@@ -1383,28 +1463,36 @@ class WhatsAppRulesPage(BasePage):
         action_layout.addLayout(action_buttons)
         action_layout.addWidget(self.actions_table)
 
-        buttons = QHBoxLayout()
-        buttons.addWidget(make_button("New Rule", self.new_rule))
-        buttons.addWidget(make_button("Save Rule", self.save_rule))
-        buttons.addWidget(make_button("Delete Rule", self.delete_rule))
-        buttons.addWidget(make_button("Test Message", self.test_rule))
-        buttons.addWidget(make_button("Refresh", self.refresh))
-        buttons.addStretch()
-        self.table = QTableWidget()
-        configure_table(self.table)
-        self.table.itemSelectionChanged.connect(self.load_selected)
         self.output = QPlainTextEdit()
+        self.output.setObjectName("rulesOutput")
         self.output.setReadOnly(True)
-        self.output.setMaximumHeight(90)
-        layout.addLayout(top)
-        layout.addWidget(audience_box)
-        layout.addWidget(trigger_box)
-        layout.addWidget(action_box)
-        layout.addLayout(buttons)
+        self.output.setMaximumHeight(76)
+        self.output.hide()
+        editor_layout.addWidget(audience_box)
+        editor_layout.addWidget(trigger_box)
+        editor_layout.addWidget(action_box)
+
+        layout.addWidget(toolbar)
+        layout.addWidget(self.summary_label)
         layout.addWidget(self.table)
         layout.addWidget(self.output)
+        layout.addWidget(self.editor_panel)
+        self.editor_panel.hide()
         self.refresh()
-        self.new_rule()
+        self.reset_rule_editor()
+
+    def _tool_button(self, text: str, icon_name: str, callback: Any | None = None, tooltip: str = "", *, primary: bool = False) -> QToolButton:
+        button = QToolButton()
+        button.setText(text)
+        button.setIcon(QIcon(str(ICON_DIR / icon_name)))
+        button.setIconSize(QSize(16, 16))
+        button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        button.setCursor(Qt.PointingHandCursor)
+        button.setToolTip(tooltip or text)
+        button.setObjectName("rulesPrimaryButton" if primary else "rulesToolButton")
+        if callback:
+            button.clicked.connect(callback)
+        return button
 
     def load_rules(self) -> list[dict[str, Any]]:
         return [normalize_rule(rule) for rule in load_whatsapp_rules()]
@@ -1413,28 +1501,125 @@ class WhatsAppRulesPage(BasePage):
         write_whatsapp_rules(rules)
 
     def refresh(self) -> None:
+        rules = self.filtered_rules()
+        self.visible_rule_ids = [str(rule.get("id") or "") for rule in rules]
+        self.table.setSortingEnabled(False)
         rows = [
             [
                 rule["id"],
+                rule.get("name") or rule["id"],
                 "On" if rule.get("enabled", True) else "Off",
                 whatsapp_audience_summary(rule),
                 whatsapp_trigger_summary(rule),
                 whatsapp_action_summary(rule),
             ]
-            for rule in self.load_rules()
+            for rule in rules
         ]
-        set_table_rows(self.table, ["ID", "State", "Audience", "Triggers", "Actions"], rows)
+        set_table_rows(self.table, ["ID", "Name", "State", "Audience", "Triggers", "Actions"], rows)
+        self.table.setSortingEnabled(True)
+        all_rules = self.load_rules()
+        enabled = sum(1 for rule in all_rules if rule.get("enabled", True))
+        self.summary_label.setText(f"{len(rules)} shown of {len(all_rules)} rules | {enabled} enabled | {len(all_rules) - enabled} disabled")
+        self.update_bulk_status()
         self.refresh_builder_tables()
 
+    def filtered_rules(self) -> list[dict[str, Any]]:
+        query = self.search_input.text().strip().casefold()
+        state = str(self.state_filter.currentData() or "all")
+        trigger_filter = str(self.trigger_filter.currentData() or "all")
+        action_filter = str(self.action_filter.currentData() or "all")
+        rules = []
+        for rule in self.load_rules():
+            enabled = bool(rule.get("enabled", True))
+            if state == "enabled" and not enabled:
+                continue
+            if state == "disabled" and enabled:
+                continue
+            trigger_types = {str(trigger.get("type") or "message").casefold() for trigger in rule.get("triggers", [])}
+            if trigger_filter != "all" and trigger_filter not in trigger_types:
+                continue
+            action_types = {str(action.get("type") or "reply").casefold() for action in rule.get("actions", [])}
+            if action_filter != "all":
+                if action_filter == "ai":
+                    if not action_types.intersection({"ai", "research", "gemini", "codex"}):
+                        continue
+                elif action_filter == "assistant":
+                    if not action_types.intersection({"assistant", "brain"}):
+                        continue
+                elif action_filter == "tool":
+                    if not action_types.intersection({"tool", "safe_tool"}):
+                        continue
+                elif action_filter not in action_types:
+                    continue
+            if query:
+                haystack = " ".join(
+                    [
+                        str(rule.get("id") or ""),
+                        str(rule.get("name") or ""),
+                        whatsapp_audience_summary(rule),
+                        whatsapp_trigger_summary(rule),
+                        whatsapp_action_summary(rule),
+                        contacts_to_text(rule.get("audience", {}).get("contacts", []) if isinstance(rule.get("audience"), dict) else []),
+                    ]
+                ).casefold()
+                if query not in haystack:
+                    continue
+            rules.append(rule)
+        return rules
+
     def load_selected(self) -> None:
-        row = self.table.currentRow()
-        if row < 0:
+        self.edit_selected_rule()
+
+    def _edit_from_table_item(self, *_args: Any) -> None:
+        self.edit_selected_rule()
+
+    def selected_rule_ids(self) -> list[str]:
+        rows = sorted({index.row() for index in self.table.selectedIndexes()})
+        if not rows and self.table.currentRow() >= 0:
+            rows = [self.table.currentRow()]
+        rule_ids: list[str] = []
+        for row in rows:
+            item = self.table.item(row, 0)
+            if item and item.text():
+                rule_ids.append(item.text())
+        return list(dict.fromkeys(rule_ids))
+
+    def update_bulk_status(self) -> None:
+        selected = len(self.selected_rule_ids())
+        base = re.sub(r" \| \d+ selected$", "", self.summary_label.text())
+        suffix = f" | {selected} selected" if selected else ""
+        if base:
+            self.summary_label.setText(base + suffix)
+
+    def show_new_rule_editor(self) -> None:
+        self.reset_rule_editor()
+        self.editor_title.setText("New WhatsApp Rule")
+        self.editor_panel.show()
+        self.id_input.setFocus()
+
+    def edit_selected_rule(self) -> None:
+        rule_ids = self.selected_rule_ids()
+        if not rule_ids:
+            QMessageBox.information(self, "WhatsApp Rule", "Select one rule to edit.")
             return
-        self.id_input.setText(self.table.item(row, 0).text() if self.table.item(row, 0) else "")
-        rule_id = self.id_input.text()
+        if len(rule_ids) > 1:
+            QMessageBox.information(self, "WhatsApp Rule", "Select only one rule to edit.")
+            return
+        self.load_rule_into_editor(rule_ids[0])
+
+    def load_rule_into_editor(self, rule_id: str) -> None:
         rule = next((item for item in self.load_rules() if item.get("id") == rule_id), {})
         if not rule:
+            QMessageBox.information(self, "WhatsApp Rule", "The selected rule was not found.")
             return
+        self.editor_rule_id = rule_id
+        self.editor_title.setText(f"Edit Rule: {rule_id}")
+        self.editor_panel.show()
+        self.populate_editor(rule)
+
+    def populate_editor(self, rule: dict[str, Any]) -> None:
+        rule_id = str(rule.get("id") or "")
+        self.id_input.setText(rule_id)
         self.name_input.setText(str(rule.get("name") or rule_id))
         self.enabled_check.setChecked(bool(rule.get("enabled", True)))
         self.trigger_logic.setCurrentIndex(1 if str(rule.get("trigger_logic")) == "all" else 0)
@@ -1447,6 +1632,48 @@ class WhatsAppRulesPage(BasePage):
         self.contacts_input.setPlainText(contacts_to_text(audience.get("contacts", [])))
         self.current_triggers = [dict(trigger) for trigger in rule.get("triggers", []) if isinstance(trigger, dict)]
         self.current_actions = [dict(action) for action in rule.get("actions", []) if isinstance(action, dict)]
+        self.refresh_builder_tables()
+
+    def duplicate_selected_rule(self) -> None:
+        rule_ids = self.selected_rule_ids()
+        if len(rule_ids) != 1:
+            QMessageBox.information(self, "WhatsApp Rule", "Select one rule to duplicate.")
+            return
+        source = next((item for item in self.load_rules() if item.get("id") == rule_ids[0]), None)
+        if not source:
+            return
+        duplicate = dict(source)
+        existing = {str(rule.get("id") or "") for rule in self.load_rules()}
+        base = f"{rule_ids[0]}-copy"
+        candidate = base
+        counter = 2
+        while candidate in existing:
+            candidate = f"{base}-{counter}"
+            counter += 1
+        duplicate["id"] = candidate
+        duplicate["name"] = f"{source.get('name') or rule_ids[0]} Copy"
+        self.editor_rule_id = ""
+        self.editor_title.setText(f"Duplicate Rule: {rule_ids[0]}")
+        self.editor_panel.show()
+        self.populate_editor(duplicate)
+
+    def close_editor(self) -> None:
+        self.editor_panel.hide()
+        self.output.hide()
+
+    def reset_rule_editor(self) -> None:
+        self.editor_rule_id = ""
+        row = self.table.currentRow()
+        if row >= 0:
+            self.table.clearSelection()
+        self.id_input.clear()
+        self.name_input.clear()
+        self.enabled_check.setChecked(True)
+        self.trigger_logic.setCurrentIndex(0)
+        self.audience_scope.setCurrentIndex(0)
+        self.contacts_input.clear()
+        self.current_triggers = []
+        self.current_actions = []
         self.refresh_builder_tables()
 
     def _build_trigger_stack(self) -> None:
@@ -1740,15 +1967,7 @@ class WhatsAppRulesPage(BasePage):
         return str(action.get("prompt") or action.get("text") or "")[:160]
 
     def new_rule(self) -> None:
-        self.id_input.clear()
-        self.name_input.clear()
-        self.enabled_check.setChecked(True)
-        self.trigger_logic.setCurrentIndex(0)
-        self.audience_scope.setCurrentIndex(0)
-        self.contacts_input.clear()
-        self.current_triggers = []
-        self.current_actions = []
-        self.refresh_builder_tables()
+        self.show_new_rule_editor()
 
     def save_rule(self) -> None:
         rule_id = self.id_input.text().strip()
@@ -1780,7 +1999,10 @@ class WhatsAppRulesPage(BasePage):
                 except re.error as exc:
                     QMessageBox.warning(self, "WhatsApp Rule", f"Regex trigger is not valid: {exc}")
                     return
-        rules = [rule for rule in self.load_rules() if rule["id"] != rule_id]
+        rules = self.load_rules()
+        if any(rule["id"] == rule_id and rule_id != self.editor_rule_id for rule in rules):
+            QMessageBox.warning(self, "WhatsApp Rule", "Another rule already uses this Rule ID.")
+            return
         new_rule: dict[str, Any] = {
             "id": rule_id,
             "name": name,
@@ -1790,21 +2012,69 @@ class WhatsAppRulesPage(BasePage):
             "triggers": self.current_triggers,
             "actions": self.current_actions,
         }
-        rules.append(new_rule)
-        self.write_rules(rules)
+        updated_rules: list[dict[str, Any]] = []
+        replaced = False
+        for rule in rules:
+            if rule["id"] == self.editor_rule_id or rule["id"] == rule_id:
+                if not replaced:
+                    updated_rules.append(new_rule)
+                    replaced = True
+                continue
+            updated_rules.append(rule)
+        if not replaced:
+            updated_rules.append(new_rule)
+        self.write_rules(updated_rules)
         self.storage.log("info", "WhatsApp Rules", f"Saved WhatsApp rule: {rule_id}")
+        self.editor_rule_id = rule_id
         self.refresh()
+        self.editor_panel.hide()
+        self.output.setPlainText(f"Saved rule: {rule_id}")
+        self.output.show()
 
     def delete_rule(self) -> None:
-        rule_id = self.id_input.text().strip() or selected_value(self.table, 0)
-        if not rule_id:
-            QMessageBox.information(self, "WhatsApp Rule", "Select a rule first.")
+        self.delete_selected_rules()
+
+    def bulk_set_enabled(self, enabled: bool) -> None:
+        rule_ids = self.selected_rule_ids()
+        if not rule_ids:
+            QMessageBox.information(self, "WhatsApp Rule", "Select one or more rules first.")
             return
-        rules = [rule for rule in self.load_rules() if rule["id"] != rule_id]
+        selected = set(rule_ids)
+        rules = self.load_rules()
+        for rule in rules:
+            if rule["id"] in selected:
+                rule["enabled"] = enabled
         self.write_rules(rules)
-        self.storage.log("info", "WhatsApp Rules", f"Deleted WhatsApp rule: {rule_id}")
-        self.new_rule()
+        state = "enabled" if enabled else "disabled"
+        self.storage.log("info", "WhatsApp Rules", f"Bulk {state} WhatsApp rules: {', '.join(rule_ids)}")
         self.refresh()
+        self.output.setPlainText(f"{state.title()} {len(rule_ids)} rule(s).")
+        self.output.show()
+
+    def delete_selected_rules(self) -> None:
+        rule_ids = self.selected_rule_ids()
+        if not rule_ids:
+            QMessageBox.information(self, "WhatsApp Rule", "Select one or more rules first.")
+            return
+        answer = QMessageBox.question(
+            self,
+            "Delete WhatsApp Rules",
+            f"Delete {len(rule_ids)} selected rule(s)?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+        selected = set(rule_ids)
+        rules = [rule for rule in self.load_rules() if rule["id"] not in selected]
+        self.write_rules(rules)
+        self.storage.log("info", "WhatsApp Rules", f"Deleted WhatsApp rules: {', '.join(rule_ids)}")
+        if self.editor_rule_id in selected:
+            self.close_editor()
+            self.reset_rule_editor()
+        self.refresh()
+        self.output.setPlainText(f"Deleted {len(rule_ids)} rule(s).")
+        self.output.show()
 
     def test_rule(self) -> None:
         sample, ok = QInputDialog.getMultiLineText(self, "WhatsApp Rule Test", "Incoming message")
@@ -1812,6 +2082,7 @@ class WhatsAppRulesPage(BasePage):
             return
         matches = WhatsAppWebService(self.storage).preview_matches(sample)
         self.output.setPlainText("\n".join(matches) if matches else "No WhatsApp rule matched.")
+        self.output.show()
 
 
 class ReplyApprovalsPage(BasePage):
@@ -2794,13 +3065,17 @@ class MainWindow(QMainWindow):
             QPushButton:hover {
                 background: #14344f;
             }
-            QLineEdit, QPlainTextEdit, QTextEdit, QTableWidget {
+            QLineEdit, QPlainTextEdit, QTextEdit, QTableWidget, QComboBox, QSpinBox, QDateEdit, QTimeEdit {
                 border: 1px solid #263d58;
                 border-radius: 4px;
                 padding: 4px;
                 background: #0c1529;
                 color: #edf7f8;
                 selection-background-color: #1f8a91;
+            }
+            QComboBox::drop-down {
+                border: 0;
+                width: 22px;
             }
             QHeaderView::section {
                 background: #111b32;
@@ -2823,6 +3098,58 @@ class MainWindow(QMainWindow):
                 left: 8px;
                 padding: 0 4px;
                 color: #9bdfe4;
+            }
+            QFrame#rulesToolbar {
+                border: 1px solid #1d4058;
+                border-radius: 6px;
+                background: #0a1327;
+            }
+            QLabel#rulesMetric {
+                color: #9fc8d4;
+                padding: 2px 4px;
+            }
+            QFrame#ruleEditorPanel {
+                border: 1px solid #24566b;
+                border-radius: 7px;
+                background: #0a1429;
+            }
+            QLabel#ruleEditorTitle {
+                color: #f4ffff;
+                font-size: 16px;
+                font-weight: 700;
+            }
+            QToolButton#rulesToolButton, QToolButton#rulesPrimaryButton {
+                padding: 6px 9px;
+                min-height: 28px;
+                border-radius: 4px;
+            }
+            QToolButton#rulesToolButton {
+                border: 1px solid #28495f;
+                background: #0f2237;
+                color: #e9fbfd;
+            }
+            QToolButton#rulesToolButton:hover {
+                background: #16364d;
+                border-color: #34708b;
+            }
+            QToolButton#rulesPrimaryButton {
+                border: 1px solid #32eadb;
+                background: #118478;
+                color: #f4ffff;
+                font-weight: 700;
+            }
+            QToolButton#rulesPrimaryButton:hover {
+                background: #159b8e;
+            }
+            QTableWidget#rulesTable {
+                background: #091326;
+                alternate-background-color: #0c182d;
+                border-color: #1c4058;
+            }
+            QPlainTextEdit#rulesOutput {
+                background: #081a2b;
+                border-color: #1f6670;
+                color: #cdecef;
             }
             QLabel#heroBrand {
                 font-size: 28px;
