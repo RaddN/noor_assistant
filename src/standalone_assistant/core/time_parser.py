@@ -89,6 +89,25 @@ def google_task_due(dt: datetime) -> str:
     return dt.astimezone(ZoneInfo("UTC")).isoformat().replace("+00:00", "Z")
 
 
+def format_local_datetime(dt: datetime) -> str:
+    local = dt.astimezone(LOCAL_TZ) if dt.tzinfo else dt.replace(tzinfo=LOCAL_TZ)
+    time_text = local.strftime("%I:%M %p").lstrip("0")
+    return f"{local:%Y-%m-%d} {time_text}"
+
+
+def format_local_timestamp(value: str | None) -> str:
+    if not value:
+        return ""
+    raw = str(value)
+    if "T" not in raw and not raw.endswith("Z") and "+" not in raw:
+        return raw
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return raw
+    return format_local_datetime(parsed)
+
+
 def clean_spaces(value: str) -> str:
     return re.sub(r"\s+", " ", value).strip(" ,.-")
 

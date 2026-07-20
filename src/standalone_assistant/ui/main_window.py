@@ -54,7 +54,7 @@ from standalone_assistant.core.paths import ICON_DIR, SESSION_DIR, WHATSAPP_REPL
 from standalone_assistant.core.project_scanner import build_codex_prompt, codex_status, find_agents, preflight_project
 from standalone_assistant.core.speech import SpeechService
 from standalone_assistant.core.storage import Storage, dumps, loads, utc_now
-from standalone_assistant.core.time_parser import parse_when
+from standalone_assistant.core.time_parser import format_local_timestamp, parse_when
 from standalone_assistant.core.whatsapp_web import WhatsAppWebService
 
 
@@ -261,7 +261,7 @@ class DashboardPage(BasePage):
 
         header = QHBoxLayout()
         identity = self.storage.get_setting("identity", {})
-        brand = QLabel(str(identity.get("name") or "Khadija Noor"))
+        brand = QLabel(str(identity.get("name") or "Noor"))
         brand.setObjectName("heroBrand")
         self.connection_state = QLabel()
         self.connection_state.setObjectName("connectionState")
@@ -410,7 +410,7 @@ class DashboardPage(BasePage):
             f"Unknown-message replies are {'enabled' if gemini['enabled'] else 'disabled'}.")
         self.cards["attention"].set_body(f"{approvals} approval items and {active_escalations} active incidents need review.")
         rows = self.storage.fetch_all("SELECT ts, level, source, message FROM activity ORDER BY id DESC LIMIT 12")
-        set_table_rows(self.activity, ["Time", "Level", "Source", "Message"], [[r["ts"], r["level"], r["source"], r["message"]] for r in rows])
+        set_table_rows(self.activity, ["Time", "Level", "Source", "Message"], [[format_local_timestamp(r["ts"]), r["level"], r["source"], r["message"]] for r in rows])
 
 
 class ToolsPage(BasePage):
@@ -586,7 +586,7 @@ class ProjectsPage(BasePage):
 
     def refresh(self) -> None:
         rows = self.storage.fetch_all("SELECT id, name, path, agents_path, last_git_status, updated_at FROM projects ORDER BY updated_at DESC")
-        set_table_rows(self.table, ["ID", "Name", "Path", "AGENTS.md", "Git", "Updated"], [[r["id"], r["name"], r["path"], r["agents_path"], r["last_git_status"], r["updated_at"]] for r in rows])
+        set_table_rows(self.table, ["ID", "Name", "Path", "AGENTS.md", "Git", "Updated"], [[r["id"], r["name"], r["path"], r["agents_path"], r["last_git_status"], format_local_timestamp(r["updated_at"])] for r in rows])
 
     def selected_project(self) -> dict[str, Any] | None:
         project_id = selected_value(self.table, 0)
@@ -828,7 +828,7 @@ class CodexSessionsPage(BasePage):
              ORDER BY s.started_at DESC
             """
         )
-        set_table_rows(self.table, ["ID", "Project", "Status", "Edits", "Started", "Ended", "Transcript"], [[r["id"], r["project"], r["status"], "yes" if r["allow_edits"] else "no", r["started_at"], r["ended_at"], r["transcript_path"]] for r in rows])
+        set_table_rows(self.table, ["ID", "Project", "Status", "Edits", "Started", "Ended", "Transcript"], [[r["id"], r["project"], r["status"], "yes" if r["allow_edits"] else "no", format_local_timestamp(r["started_at"]), format_local_timestamp(r["ended_at"]), r["transcript_path"]] for r in rows])
 
     def show_transcript(self) -> None:
         path = selected_value(self.table, 6)
@@ -920,7 +920,7 @@ class TasksPage(BasePage):
     def refresh_local_tasks(self) -> None:
         self.google_task_rows = []
         rows = self.storage.fetch_all("SELECT id, title, priority, due_at, status, contact, updated_at FROM tasks ORDER BY status, due_at IS NULL, due_at, id DESC")
-        set_table_rows(self.table, ["ID", "Task", "Priority", "Due", "Status", "Contact", "Updated", "Source"], [[r["id"], r["title"], r["priority"], r["due_at"], r["status"], r["contact"], r["updated_at"], "Local mirror"] for r in rows])
+        set_table_rows(self.table, ["ID", "Task", "Priority", "Due", "Status", "Contact", "Updated", "Source"], [[r["id"], r["title"], r["priority"], format_local_timestamp(r["due_at"]), r["status"], r["contact"], format_local_timestamp(r["updated_at"]), "Local mirror"] for r in rows])
 
     def add_task(self) -> None:
         title = self.title_input.text().strip()
@@ -932,7 +932,7 @@ class TasksPage(BasePage):
         result = self.google.create_task(
             title,
             due=parsed.start if parsed else None,
-            notes=self.notes_input.text().strip() or "Created by Khadija Noor",
+            notes=self.notes_input.text().strip() or "Created by Noor for Raihan Hossain",
             interactive=False,
         )
         if not result.ok:
@@ -1035,7 +1035,7 @@ class CalendarPage(BasePage):
         status_text = result.message + ("\n" + result.error if result.error else "")
         self.status_label.setText(status_text if status["authorization_connected"] else "Google Calendar is not authorized yet. Use Connect Google Calendar.")
         rows = self.storage.fetch_all("SELECT title, priority, due_at, status, contact FROM tasks WHERE due_at IS NOT NULL ORDER BY due_at")
-        set_table_rows(self.table, ["Item", "Priority", "Due", "Status", "Contact", "Source"], [[r["title"], r["priority"], r["due_at"], r["status"], r["contact"], "Local mirror"] for r in rows])
+        set_table_rows(self.table, ["Item", "Priority", "Due", "Status", "Contact", "Source"], [[r["title"], r["priority"], format_local_timestamp(r["due_at"]), r["status"], r["contact"], "Local mirror"] for r in rows])
 
     def connect_google(self) -> None:
         result = self.google.connect()
@@ -1168,7 +1168,7 @@ class KnowledgePage(BasePage):
 
     def refresh(self) -> None:
         rows = self.storage.fetch_all("SELECT id, title, category, trusted, updated_at FROM knowledge ORDER BY updated_at DESC")
-        set_table_rows(self.table, ["ID", "Title", "Category", "Trusted", "Updated"], [[r["id"], r["title"], r["category"], "yes" if r["trusted"] else "no", r["updated_at"]] for r in rows])
+        set_table_rows(self.table, ["ID", "Title", "Category", "Trusted", "Updated"], [[r["id"], r["title"], r["category"], "yes" if r["trusted"] else "no", format_local_timestamp(r["updated_at"])] for r in rows])
 
     def add_knowledge(self) -> None:
         title = self.title_input.text().strip()
@@ -1207,7 +1207,7 @@ class EscalationsPage(BasePage):
 
     def refresh(self) -> None:
         rows = self.storage.fetch_all("SELECT id, title, priority, status, source, summary, updated_at FROM escalations ORDER BY updated_at DESC")
-        set_table_rows(self.table, ["ID", "Title", "Priority", "Status", "Source", "Summary", "Updated"], [[r["id"], r["title"], r["priority"], r["status"], r["source"], r["summary"], r["updated_at"]] for r in rows])
+        set_table_rows(self.table, ["ID", "Title", "Priority", "Status", "Source", "Summary", "Updated"], [[r["id"], r["title"], r["priority"], r["status"], r["source"], r["summary"], format_local_timestamp(r["updated_at"])] for r in rows])
 
     def create_incident(self) -> None:
         title, ok = QInputDialog.getText(self, "Manual Incident", "Title")
@@ -1251,7 +1251,7 @@ class WhatsAppPage(BasePage):
         super().__init__(storage)
         self.whatsapp = WhatsAppWebService(storage)
         layout = QVBoxLayout(self)
-        self.status_label = QLabel("Noor watches unread direct chats in her dedicated WhatsApp profile. Matching rules reply automatically; unknown messages require a working Gemini CLI.")
+        self.status_label = QLabel("Noor watches unread direct chats in her dedicated WhatsApp profile. Only matching WhatsApp rules can reply; unmatched messages are ignored.")
         self.status_label.setWordWrap(True)
         actions = QHBoxLayout()
         actions.addWidget(make_button("Open Dedicated WhatsApp", self.open_dedicated_profile))
@@ -1281,7 +1281,7 @@ class WhatsAppPage(BasePage):
 
     def refresh(self) -> None:
         rows = self.storage.fetch_all("SELECT chat_name, source, status, created_at FROM whatsapp_auto_replies ORDER BY id DESC LIMIT 100")
-        set_table_rows(self.table, ["Chat", "Reply source", "Outcome", "Time"], [[r["chat_name"], r["source"], r["status"], r["created_at"]] for r in rows])
+        set_table_rows(self.table, ["Chat", "Reply source", "Outcome", "Time"], [[r["chat_name"], r["source"], r["status"], format_local_timestamp(r["created_at"])] for r in rows])
 
 
 class WhatsAppRulesPage(BasePage):
@@ -1296,14 +1296,19 @@ class WhatsAppRulesPage(BasePage):
         self.pattern_input = QLineEdit()
         self.pattern_input.setPlaceholderText(r"^\s*(hi|hello|hey)\b")
         self.reply_input = QPlainTextEdit()
-        self.reply_input.setPlaceholderText("Reply Noor should send when the pattern matches.")
+        self.reply_input.setPlaceholderText("Direct reply text. Leave blank when Action JSON produces the reply.")
         self.reply_input.setMaximumHeight(110)
+        self.action_input = QPlainTextEdit()
+        self.action_input.setPlaceholderText('Optional action JSON, for example {"type":"assistant","prompt":"project status"}')
+        self.action_input.setMaximumHeight(130)
         form.addWidget(QLabel("Rule ID"), 0, 0)
         form.addWidget(self.id_input, 0, 1)
         form.addWidget(QLabel("Pattern"), 1, 0)
         form.addWidget(self.pattern_input, 1, 1)
         form.addWidget(QLabel("Reply"), 2, 0)
         form.addWidget(self.reply_input, 2, 1)
+        form.addWidget(QLabel("Action JSON"), 3, 0)
+        form.addWidget(self.action_input, 3, 1)
         buttons = QHBoxLayout()
         buttons.addWidget(make_button("Save Rule", self.save_rule))
         buttons.addWidget(make_button("Delete Rule", self.delete_rule))
@@ -1322,7 +1327,7 @@ class WhatsAppRulesPage(BasePage):
         layout.addWidget(self.output)
         self.refresh()
 
-    def load_rules(self) -> list[dict[str, str]]:
+    def load_rules(self) -> list[dict[str, Any]]:
         try:
             rules = json.loads(WHATSAPP_REPLY_RULES.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
@@ -1332,21 +1337,32 @@ class WhatsAppRulesPage(BasePage):
         clean_rules = []
         for rule in rules:
             if isinstance(rule, dict):
-                clean_rules.append(
-                    {
-                        "id": str(rule.get("id") or "").strip(),
-                        "pattern": str(rule.get("pattern") or "").strip(),
-                        "reply": str(rule.get("reply") or "").strip(),
-                    }
-                )
+                clean = dict(rule)
+                clean["id"] = str(rule.get("id") or "").strip()
+                clean["pattern"] = str(rule.get("pattern") or "").strip()
+                clean["reply"] = str(rule.get("reply") or "").strip()
+                clean_rules.append(clean)
         return clean_rules
 
-    def write_rules(self, rules: list[dict[str, str]]) -> None:
+    def write_rules(self, rules: list[dict[str, Any]]) -> None:
         WHATSAPP_REPLY_RULES.write_text(json.dumps(rules, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
     def refresh(self) -> None:
-        rows = [[rule["id"], rule["pattern"], rule["reply"]] for rule in self.load_rules()]
-        set_table_rows(self.table, ["ID", "Pattern", "Reply"], rows)
+        rows = [[rule["id"], rule["pattern"], self.action_summary(rule), rule["reply"]] for rule in self.load_rules()]
+        set_table_rows(self.table, ["ID", "Pattern", "Action", "Reply"], rows)
+
+    @staticmethod
+    def action_summary(rule: dict[str, Any]) -> str:
+        action = rule.get("action")
+        if isinstance(action, dict):
+            action_type = str(action.get("type") or "reply")
+            provider = action.get("provider")
+            tool_id = action.get("tool_id")
+            suffix = f":{provider}" if provider else f":{tool_id}" if tool_id else ""
+            return action_type + suffix
+        if isinstance(action, str) and action.strip():
+            return action.strip()
+        return "reply"
 
     def load_selected(self) -> None:
         row = self.table.currentRow()
@@ -1354,22 +1370,44 @@ class WhatsAppRulesPage(BasePage):
             return
         self.id_input.setText(self.table.item(row, 0).text() if self.table.item(row, 0) else "")
         self.pattern_input.setText(self.table.item(row, 1).text() if self.table.item(row, 1) else "")
-        self.reply_input.setPlainText(self.table.item(row, 2).text() if self.table.item(row, 2) else "")
+        rule_id = self.id_input.text()
+        rule = next((item for item in self.load_rules() if item.get("id") == rule_id), {})
+        self.reply_input.setPlainText(str(rule.get("reply") or ""))
+        action = rule.get("action")
+        self.action_input.setPlainText(json.dumps(action, indent=2, ensure_ascii=False) if isinstance(action, dict) else str(action or ""))
 
     def save_rule(self) -> None:
         rule_id = self.id_input.text().strip()
         pattern = self.pattern_input.text().strip()
         reply = self.reply_input.toPlainText().strip()
-        if not rule_id or not pattern or not reply:
-            QMessageBox.information(self, "WhatsApp Rule", "Rule ID, pattern, and reply are required.")
+        action_text = self.action_input.toPlainText().strip()
+        if not rule_id or not pattern or (not reply and not action_text):
+            QMessageBox.information(self, "WhatsApp Rule", "Rule ID, pattern, and either reply or action JSON are required.")
             return
         try:
             re.compile(pattern)
         except re.error as exc:
             QMessageBox.warning(self, "WhatsApp Rule", f"Pattern is not valid regex: {exc}")
             return
+        action: Any = None
+        if action_text:
+            try:
+                action = json.loads(action_text)
+            except json.JSONDecodeError:
+                action = action_text
+            if not isinstance(action, (dict, str)):
+                QMessageBox.warning(self, "WhatsApp Rule", "Action JSON must be an object or string.")
+                return
+            if isinstance(action, dict) and not action:
+                QMessageBox.warning(self, "WhatsApp Rule", "Action JSON cannot be an empty object.")
+                return
         rules = [rule for rule in self.load_rules() if rule["id"] != rule_id]
-        rules.append({"id": rule_id, "pattern": pattern, "reply": reply})
+        new_rule: dict[str, Any] = {"id": rule_id, "pattern": pattern}
+        if reply:
+            new_rule["reply"] = reply
+        if action is not None:
+            new_rule["action"] = action
+        rules.append(new_rule)
         self.write_rules(rules)
         self.storage.log("info", "WhatsApp Rules", f"Saved WhatsApp reply rule: {rule_id}")
         self.refresh()
@@ -1392,7 +1430,7 @@ class WhatsAppRulesPage(BasePage):
         for rule in self.load_rules():
             try:
                 if rule["pattern"] and re.search(rule["pattern"], sample, flags=re.IGNORECASE):
-                    matches.append(f"{rule['id']}: {rule['reply']}")
+                    matches.append(f"{rule['id']}: {self.action_summary(rule)} -> {rule.get('reply') or rule.get('action')}")
             except re.error:
                 matches.append(f"{rule['id']}: invalid pattern")
         self.output.setPlainText("\n".join(matches) if matches else "No WhatsApp rule matched.")
@@ -1419,7 +1457,7 @@ class ReplyApprovalsPage(BasePage):
         rows = self.storage.fetch_all(
             "SELECT id, title, priority, status, source, summary, updated_at FROM escalations WHERE status IN ('Detected', 'Waiting for acknowledgement') ORDER BY updated_at DESC"
         )
-        set_table_rows(self.table, ["ID", "Title", "Priority", "Status", "Source", "Summary", "Updated"], [[r["id"], r["title"], r["priority"], r["status"], r["source"], r["summary"], r["updated_at"]] for r in rows])
+        set_table_rows(self.table, ["ID", "Title", "Priority", "Status", "Source", "Summary", "Updated"], [[r["id"], r["title"], r["priority"], r["status"], r["source"], r["summary"], format_local_timestamp(r["updated_at"])] for r in rows])
 
     def set_status(self, status: str) -> None:
         incident_id = selected_value(self.table, 0)
@@ -1515,7 +1553,7 @@ class TeamStatusPage(BasePage):
 
     def refresh(self) -> None:
         tools = self.registry.list_tools()
-        rows = [[tool["name"], tool["connection_status"], tool["last_run"], ", ".join(tool["capabilities"][:3])] for tool in tools]
+        rows = [[tool["name"], tool["connection_status"], format_local_timestamp(tool["last_run"]), ", ".join(tool["capabilities"][:3])] for tool in tools]
         set_table_rows(self.table, ["Source", "Status", "Last run", "Signals"], rows)
 
 
@@ -1533,7 +1571,7 @@ class ActivityPage(BasePage):
 
     def refresh(self) -> None:
         rows = self.storage.fetch_all("SELECT id, ts, level, source, message FROM activity ORDER BY id DESC LIMIT 500")
-        set_table_rows(self.table, ["ID", "Time", "Level", "Source", "Message"], [[r["id"], r["ts"], r["level"], r["source"], r["message"]] for r in rows])
+        set_table_rows(self.table, ["ID", "Time", "Level", "Source", "Message"], [[r["id"], format_local_timestamp(r["ts"]), r["level"], r["source"], r["message"]] for r in rows])
 
 
 class SettingsPage(BasePage):
@@ -1557,11 +1595,11 @@ class SettingsPage(BasePage):
         escalation_layout = QFormLayout(escalation_box)
         self.escalation_enabled = QCheckBox("Enabled")
         self.teams_enabled = QCheckBox("Teams enabled")
-        self.find_hub_enabled = QCheckBox("Find Hub enabled")
+        self.find_hub_enabled = QCheckBox("Find My Phone enabled")
         escalation = self.storage.get_setting("escalation", {})
         self.escalation_enabled.setChecked(bool(escalation.get("enabled")))
         self.teams_enabled.setChecked(bool(escalation.get("teams_enabled")))
-        self.find_hub_enabled.setChecked(bool(escalation.get("find_hub_enabled")))
+        self.find_hub_enabled.setChecked(bool(escalation.get("find_hub_enabled", True)))
         self.quiet_start = QLineEdit(str(escalation.get("quiet_hours_start", "22:00")))
         self.quiet_end = QLineEdit(str(escalation.get("quiet_hours_end", "08:00")))
         escalation_layout.addRow("", self.escalation_enabled)
@@ -1577,23 +1615,11 @@ class SettingsPage(BasePage):
         self.whatsapp_enabled.setChecked(bool(whatsapp.get("enabled", True)))
         self.whatsapp_auto_start = QCheckBox("Start WhatsApp bridge when Noor opens")
         self.whatsapp_auto_start.setChecked(bool(whatsapp.get("auto_start", True)))
-        self.whatsapp_cooldown = QSpinBox()
-        self.whatsapp_cooldown.setRange(0, 3600)
-        self.whatsapp_cooldown.setValue(int(whatsapp.get("cooldown_seconds", 120)))
-        self.whatsapp_rate_limit = QSpinBox()
-        self.whatsapp_rate_limit.setRange(1, 30)
-        self.whatsapp_rate_limit.setValue(int(whatsapp.get("max_drafts_per_hour", 6)))
-        self.whatsapp_quiet_start = QLineEdit(str(whatsapp.get("quiet_hours_start", "22:00")))
-        self.whatsapp_quiet_end = QLineEdit(str(whatsapp.get("quiet_hours_end", "08:00")))
         self.whatsapp_store_private = QCheckBox("Store message previews")
         self.whatsapp_store_private.setChecked(bool(whatsapp.get("store_private_messages", False)))
-        whatsapp_layout.addRow("Sending", QLabel("Disabled: dry-run approval drafts only"))
+        whatsapp_layout.addRow("Sending", QLabel("Active for matching direct-message rules"))
         whatsapp_layout.addRow("", self.whatsapp_enabled)
         whatsapp_layout.addRow("", self.whatsapp_auto_start)
-        whatsapp_layout.addRow("Draft cooldown", self.whatsapp_cooldown)
-        whatsapp_layout.addRow("Drafts per hour", self.whatsapp_rate_limit)
-        whatsapp_layout.addRow("Quiet start", self.whatsapp_quiet_start)
-        whatsapp_layout.addRow("Quiet end", self.whatsapp_quiet_end)
         whatsapp_layout.addRow("", self.whatsapp_store_private)
 
         auto_reply_box = QGroupBox("WhatsApp Automatic Replies")
@@ -1604,19 +1630,11 @@ class SettingsPage(BasePage):
         self.whatsapp_auto_poll = QSpinBox()
         self.whatsapp_auto_poll.setRange(5, 60)
         self.whatsapp_auto_poll.setValue(int(auto_reply.get("poll_seconds", 12)))
-        self.whatsapp_auto_cooldown = QSpinBox()
-        self.whatsapp_auto_cooldown.setRange(0, 3600)
-        self.whatsapp_auto_cooldown.setValue(int(auto_reply.get("cooldown_seconds", 180)))
-        self.whatsapp_auto_rate_limit = QSpinBox()
-        self.whatsapp_auto_rate_limit.setRange(1, 10)
-        self.whatsapp_auto_rate_limit.setValue(int(auto_reply.get("max_replies_per_hour", 4)))
         self.whatsapp_skip_groups = QCheckBox("Never reply in group chats")
         self.whatsapp_skip_groups.setChecked(bool(auto_reply.get("skip_groups", True)))
-        auto_reply_layout.addRow("Mode", QLabel("Rules reply directly; unknown messages use Gemini only when its CLI is available."))
+        auto_reply_layout.addRow("Mode", QLabel("Rules decide direct replies, actions, tool checks, research, Gemini, or Codex. Unmatched messages are ignored."))
         auto_reply_layout.addRow("", self.whatsapp_auto_enabled)
         auto_reply_layout.addRow("Check unread chats", self.whatsapp_auto_poll)
-        auto_reply_layout.addRow("Per-chat cooldown", self.whatsapp_auto_cooldown)
-        auto_reply_layout.addRow("Replies per hour", self.whatsapp_auto_rate_limit)
         auto_reply_layout.addRow("", self.whatsapp_skip_groups)
 
         ai_box = QGroupBox("AI Brain")
@@ -1630,29 +1648,18 @@ class SettingsPage(BasePage):
         self.ai_gemini_enabled.setChecked(bool(ai_brain.get("gemini_enabled", True)))
         self.ai_codex_enabled = QCheckBox("Use Codex if Gemini fails")
         self.ai_codex_enabled.setChecked(bool(ai_brain.get("codex_enabled", True)))
-        self.ai_whatsapp_questions_only = QCheckBox("Use AI on WhatsApp questions only")
-        self.ai_whatsapp_questions_only.setChecked(bool(ai_brain.get("whatsapp_ai_for_questions_only", True)))
         self.ai_cache_hours = QSpinBox()
         self.ai_cache_hours.setRange(0, 168)
         self.ai_cache_hours.setValue(int(ai_brain.get("cache_hours", 24)))
         self.ai_research_pages = QSpinBox()
         self.ai_research_pages.setRange(1, 5)
         self.ai_research_pages.setValue(int(ai_brain.get("max_research_pages", 3)))
-        self.ai_gemini_limit = QSpinBox()
-        self.ai_gemini_limit.setRange(0, 20)
-        self.ai_gemini_limit.setValue(int(ai_brain.get("max_gemini_calls_per_hour", 4)))
-        self.ai_codex_limit = QSpinBox()
-        self.ai_codex_limit.setRange(0, 10)
-        self.ai_codex_limit.setValue(int(ai_brain.get("max_codex_calls_per_hour", 2)))
         ai_layout.addRow("", self.ai_enabled)
         ai_layout.addRow("", self.ai_research_enabled)
         ai_layout.addRow("", self.ai_gemini_enabled)
         ai_layout.addRow("", self.ai_codex_enabled)
-        ai_layout.addRow("", self.ai_whatsapp_questions_only)
         ai_layout.addRow("Cache hours", self.ai_cache_hours)
         ai_layout.addRow("Research pages", self.ai_research_pages)
-        ai_layout.addRow("Gemini calls/hour", self.ai_gemini_limit)
-        ai_layout.addRow("Codex calls/hour", self.ai_codex_limit)
 
         gemini_box = QGroupBox("Gemini CLI")
         gemini_layout = QFormLayout(gemini_box)
@@ -1788,6 +1795,14 @@ class SettingsPage(BasePage):
                 "quiet_hours_end": self.quiet_end.text().strip(),
             }
         )
+        find_phone = self.storage.get_setting("find_phone", {})
+        find_phone.update(
+            {
+                "enabled": self.find_hub_enabled.isChecked(),
+                "url": str(find_phone.get("url") or "https://www.google.com/android/find/"),
+                "mode": "play_sound_only",
+            }
+        )
         voice = self.storage.get_setting("voice", {})
         voice.update(
             {
@@ -1802,19 +1817,13 @@ class SettingsPage(BasePage):
                 "recognition_mode": self.recognition_mode.currentData() or "hybrid",
             }
         )
-        whatsapp = self.storage.get_setting("whatsapp_web", {})
-        whatsapp.update(
-            {
-                "enabled": self.whatsapp_enabled.isChecked(),
-                "auto_start": self.whatsapp_auto_start.isChecked(),
-                "send_mode": "dry-run",
-                "store_private_messages": self.whatsapp_store_private.isChecked(),
-                "cooldown_seconds": self.whatsapp_cooldown.value(),
-                "quiet_hours_start": self.whatsapp_quiet_start.text().strip(),
-                "quiet_hours_end": self.whatsapp_quiet_end.text().strip(),
-                "max_drafts_per_hour": self.whatsapp_rate_limit.value(),
-            }
-        )
+        whatsapp = {
+            "enabled": self.whatsapp_enabled.isChecked(),
+            "auto_start": self.whatsapp_auto_start.isChecked(),
+            "send_mode": "active",
+            "store_private_messages": self.whatsapp_store_private.isChecked(),
+            "max_messages_per_read": int(self.storage.get_setting("whatsapp_web", {}).get("max_messages_per_read", 25)),
+        }
         gemini = self.storage.get_setting("gemini_cli", {})
         gemini.update(
             {
@@ -1824,21 +1833,14 @@ class SettingsPage(BasePage):
                 "max_context_characters": int(gemini.get("max_context_characters", 2200)),
             }
         )
-        ai_brain = self.storage.get_setting("ai_brain", {})
-        ai_brain.update(
-            {
-                "enabled": self.ai_enabled.isChecked(),
-                "research_enabled": self.ai_research_enabled.isChecked(),
-                "gemini_enabled": self.ai_gemini_enabled.isChecked(),
-                "codex_enabled": self.ai_codex_enabled.isChecked(),
-                "cache_hours": self.ai_cache_hours.value(),
-                "max_research_pages": self.ai_research_pages.value(),
-                "max_gemini_calls_per_hour": self.ai_gemini_limit.value(),
-                "max_codex_calls_per_hour": self.ai_codex_limit.value(),
-                "provider_cooldown_minutes": int(ai_brain.get("provider_cooldown_minutes", 20)),
-                "whatsapp_ai_for_questions_only": self.ai_whatsapp_questions_only.isChecked(),
-            }
-        )
+        ai_brain = {
+            "enabled": self.ai_enabled.isChecked(),
+            "research_enabled": self.ai_research_enabled.isChecked(),
+            "gemini_enabled": self.ai_gemini_enabled.isChecked(),
+            "codex_enabled": self.ai_codex_enabled.isChecked(),
+            "cache_hours": self.ai_cache_hours.value(),
+            "max_research_pages": self.ai_research_pages.value(),
+        }
         codex_ai = self.storage.get_setting("codex_ai", {})
         codex_ai.update(
             {
@@ -1849,18 +1851,17 @@ class SettingsPage(BasePage):
                 "max_context_characters": int(codex_ai.get("max_context_characters", 2200)),
             }
         )
-        auto_reply = self.storage.get_setting("whatsapp_auto_reply", {})
-        auto_reply.update(
-            {
-                "enabled": self.whatsapp_auto_enabled.isChecked(),
-                "poll_seconds": self.whatsapp_auto_poll.value(),
-                "cooldown_seconds": self.whatsapp_auto_cooldown.value(),
-                "max_replies_per_hour": self.whatsapp_auto_rate_limit.value(),
-                "skip_groups": self.whatsapp_skip_groups.isChecked(),
-            }
-        )
+        existing_auto_reply = self.storage.get_setting("whatsapp_auto_reply", {})
+        auto_reply = {
+            "enabled": self.whatsapp_auto_enabled.isChecked(),
+            "poll_seconds": self.whatsapp_auto_poll.value(),
+            "skip_groups": self.whatsapp_skip_groups.isChecked(),
+            "activity_baseline_ready": bool(existing_auto_reply.get("activity_baseline_ready", False)),
+            "activity_baseline_hashes": existing_auto_reply.get("activity_baseline_hashes", []),
+        }
         self.storage.set_setting("approvals", approvals)
         self.storage.set_setting("escalation", escalation)
+        self.storage.set_setting("find_phone", find_phone)
         self.storage.set_setting("voice", voice)
         self.storage.set_setting("whatsapp_web", whatsapp)
         self.storage.set_setting("whatsapp_auto_reply", auto_reply)
@@ -1887,7 +1888,7 @@ class FloatingChatDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 16, 16, 16)
         header = QHBoxLayout()
-        title = QLabel("Khadija Noor")
+        title = QLabel("Noor")
         title.setObjectName("floatingChatTitle")
         close_button = QToolButton()
         close_button.setText("x")

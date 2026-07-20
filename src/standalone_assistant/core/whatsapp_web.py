@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from standalone_assistant.core.ai_response import AIResponseService
+from standalone_assistant.core.connectors import ToolRegistry
 from standalone_assistant.core.gemini_cli import GeminiCli, GeminiResult
 from standalone_assistant.core.paths import (
     PROJECT_ROOT,
@@ -40,6 +41,15 @@ class WhatsAppResult:
     error: str = ""
 
 
+@dataclass
+class WhatsAppRuleResult:
+    matched: bool
+    ok: bool
+    reply: str = ""
+    source: str = ""
+    error: str = ""
+
+
 class WhatsAppWebService:
     """Event-driven WhatsApp Web bridge with an isolated local authentication session."""
 
@@ -50,12 +60,8 @@ class WhatsAppWebService:
         defaults = {
             "enabled": True,
             "auto_start": True,
-            "send_mode": "dry-run",
+            "send_mode": "active",
             "store_private_messages": False,
-            "cooldown_seconds": 120,
-            "quiet_hours_start": "22:00",
-            "quiet_hours_end": "08:00",
-            "max_drafts_per_hour": 6,
             "max_messages_per_read": 25,
         }
         defaults.update(self.storage.get_setting("whatsapp_web", {}))
@@ -209,21 +215,16 @@ class WhatsAppWebService:
         if self.storage.fetch_one("SELECT 1 FROM whatsapp_auto_replies WHERE message_hash = ?", (message_hash,)):
             return None
         self.capture_fingerprint(chat, message_hash, body)
-        reply, source = self._reply_for(body)
-        if not reply:
-            allowed, reason = self._auto_reply_allowed(chat, auto)
-            if not allowed:
-                return WhatsAppResult(False, reason)
-            fallback = self.smart_reply(body)
-            if not fallback.ok:
-                self._record_auto_reply(chat, message_hash, "", "ai", "Blocked")
-                self.storage.log("warning", "WhatsApp", "Unknown message left unsent because AI fallback could not prepare a reply.", {"chat": chat, "message_hash": message_hash, "error": fallback.error})
-                return WhatsAppResult(False, "Unknown message was not sent because Noor could not prepare a reliable reply.", error=fallback.error)
-            reply, source = fallback.text, fallback.source
-        else:
-            allowed, reason = self._auto_reply_allowed(chat, auto, bypass_chat_cooldown=True)
-            if not allowed:
-                return WhatsAppResult(False, reason)
+        rule_result = self._reply_for(body)
+        if not rule_result.matched:
+            self._record_auto_reply(chat, message_hash, "", "no-rule", "Ignored")
+            self.storage.log("info", "WhatsApp", "Unread direct message ignored because no WhatsApp rule matched.", {"chat": chat, "message_hash": message_hash})
+            return WhatsAppResult(True, "No WhatsApp rule matched; no reply sent.", {"chat": chat, "source": "no-rule"})
+        if not rule_result.ok or not rule_result.reply:
+            self._record_auto_reply(chat, message_hash, "", rule_result.source or "rule-error", "Blocked")
+            self.storage.log("warning", "WhatsApp", "Matched WhatsApp rule could not produce a reply.", {"chat": chat, "message_hash": message_hash, "source": rule_result.source, "error": rule_result.error})
+            return WhatsAppResult(False, "Matched WhatsApp rule could not produce a reply.", error=rule_result.error)
+        reply, source = rule_result.reply, rule_result.source
         send_payload = {"reply": reply}
         if result.data.get("chat_id"):
             send_payload["chat_id"] = str(result.data.get("chat_id") or "")
@@ -271,7 +272,7 @@ class WhatsAppWebService:
             (draft_id, f"Reply approval: {chat[:120] or 'Unknown chat'}", draft[:220], dumps({"chat": chat[:180], "draft_only": True, "send_mode": "dry-run", "origin": origin}), now, now),
         )
         self.storage.log("info", "WhatsApp", "Created a WhatsApp reply approval draft.", {"draft_id": draft_id, "chat": chat[:180], "origin": origin})
-        return WhatsAppResult(True, "Reply draft saved for approval. Sending remains disabled.", {"draft_id": draft_id})
+        return WhatsAppResult(True, "Reply draft saved for approval.", {"draft_id": draft_id})
 
     def gemini_draft(self, incoming_message: str) -> GeminiResult:
         return GeminiCli(self.storage.get_setting("gemini_cli", {}), PROJECT_ROOT).draft_reply(incoming_message)
@@ -283,8 +284,6 @@ class WhatsAppWebService:
         defaults = {
             "enabled": True,
             "poll_seconds": 12,
-            "cooldown_seconds": 180,
-            "max_replies_per_hour": 4,
             "skip_groups": True,
             "activity_baseline_ready": False,
             "activity_baseline_hashes": [],
@@ -316,43 +315,94 @@ class WhatsAppWebService:
             time.sleep(0.2)
         return WhatsAppResult(False, "The dedicated WhatsApp bridge did not answer in time.")
 
-    def _reply_for(self, message: str) -> tuple[str, str]:
+    def _reply_for(self, message: str) -> WhatsAppRuleResult:
         try:
             rules = json.loads(WHATSAPP_REPLY_RULES.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
-            return "", ""
+            return WhatsAppRuleResult(False, False, error="WhatsApp rules could not be read.")
         if not isinstance(rules, list):
-            return "", ""
+            return WhatsAppRuleResult(False, False, error="WhatsApp rules file is not a list.")
         for rule in rules:
             if not isinstance(rule, dict):
                 continue
             pattern = str(rule.get("pattern") or "")
-            reply = str(rule.get("reply") or "").strip()
             try:
-                matched = bool(pattern and reply and re.search(pattern, message, flags=re.IGNORECASE))
+                match = re.search(pattern, message, flags=re.IGNORECASE) if pattern else None
             except re.error:
-                matched = False
-            if matched:
-                return reply, f"rule:{str(rule.get('id') or 'custom')}"
-        return "", ""
+                continue
+            if match:
+                return self._execute_rule(rule, message, match)
+        return WhatsAppRuleResult(False, True)
 
-    def _auto_reply_allowed(self, chat: str, auto: dict[str, Any], *, bypass_chat_cooldown: bool = False) -> tuple[bool, str]:
-        now = datetime.now(timezone.utc)
-        settings = self.settings()
-        local_now = datetime.now().astimezone()
-        if not bypass_chat_cooldown and self._quiet_hours(local_now, str(settings.get("quiet_hours_start", "22:00")), str(settings.get("quiet_hours_end", "08:00"))):
-            return False, "WhatsApp quiet hours are active; automatic replies are paused."
-        cooldown = max(0, min(int(auto.get("cooldown_seconds", 180)), 3600))
-        latest = self.storage.fetch_one("SELECT created_at FROM whatsapp_auto_replies WHERE chat_name = ? ORDER BY created_at DESC LIMIT 1", (chat[:180],))
-        if latest and cooldown and not bypass_chat_cooldown:
-            prior = datetime.fromisoformat(latest["created_at"].replace("Z", "+00:00"))
-            if now - prior < timedelta(seconds=cooldown):
-                return False, "Auto-reply cooldown is active for this chat."
-        cutoff = (now - timedelta(hours=1)).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-        count = self.storage.fetch_one("SELECT COUNT(*) AS c FROM whatsapp_auto_replies WHERE created_at >= ?", (cutoff,))
-        if count and int(count["c"]) >= max(1, min(int(auto.get("max_replies_per_hour", 4)), 10)):
-            return False, "Hourly auto-reply limit reached."
-        return True, ""
+    def _execute_rule(self, rule: dict[str, Any], message: str, match: re.Match[str]) -> WhatsAppRuleResult:
+        rule_id = str(rule.get("id") or "custom")
+        action = rule.get("action")
+        action_type = "reply"
+        action_payload: dict[str, Any] = {}
+        if isinstance(action, str) and action.strip():
+            action_type = action.strip().casefold()
+        elif isinstance(action, dict):
+            action_payload = action
+            action_type = str(action.get("type") or "reply").strip().casefold()
+
+        reply_template = str(action_payload.get("reply") or rule.get("reply") or "").strip()
+        source = f"rule:{rule_id}:{action_type}"
+        if action_type == "reply":
+            if not reply_template:
+                return WhatsAppRuleResult(True, False, source=source, error="Reply rule has no reply text.")
+            return WhatsAppRuleResult(True, True, self._render_rule_template(reply_template, message, match), source)
+
+        prompt = self._render_rule_template(str(action_payload.get("prompt") or "{message}"), message, match)
+        if action_type in {"assistant", "brain"}:
+            from standalone_assistant.core.assistant_brain import AssistantBrain
+
+            reply = AssistantBrain(self.storage).answer(prompt).text.strip()
+            return WhatsAppRuleResult(True, bool(reply), reply[:1200], source, "" if reply else "Assistant returned an empty answer.")
+
+        if action_type in {"ai", "research", "gemini", "codex"}:
+            provider = str(action_payload.get("provider") or ("auto" if action_type == "ai" else action_type))
+            result = AIResponseService(self.storage, PROJECT_ROOT).answer_with_provider(provider, prompt, channel="whatsapp")
+            return WhatsAppRuleResult(True, result.ok, result.text, f"{source}:{result.source or provider}", result.error)
+
+        if action_type in {"tool", "safe_tool"}:
+            return self._execute_tool_rule(rule_id, action_payload, message, match)
+
+        return WhatsAppRuleResult(True, False, source=source, error=f"Unknown WhatsApp rule action: {action_type}")
+
+    def _execute_tool_rule(self, rule_id: str, action: dict[str, Any], message: str, match: re.Match[str]) -> WhatsAppRuleResult:
+        tool_id = self._render_rule_template(str(action.get("tool_id") or ""), message, match).strip()
+        if not tool_id:
+            return WhatsAppRuleResult(True, False, source=f"rule:{rule_id}:tool", error="Tool rule has no tool_id.")
+        try:
+            command_index = int(action.get("command_index", 0))
+        except (TypeError, ValueError):
+            command_index = 0
+        result = ToolRegistry(self.storage).run_safe_command(tool_id, command_index)
+        output = result.combined_output[:2500] or ("Command completed." if result.ok else "Command returned no output.")
+        if action.get("summarize_with"):
+            prompt = self._render_rule_template(
+                str(action.get("summary_prompt") or "Summarize this tool result for a concise WhatsApp reply."),
+                message,
+                match,
+            )
+            ai = AIResponseService(self.storage, PROJECT_ROOT).answer_with_provider(str(action.get("summarize_with")), prompt, channel="whatsapp", context=output)
+            if ai.ok:
+                return WhatsAppRuleResult(True, True, ai.text, f"rule:{rule_id}:tool:{ai.source}")
+        if action.get("reply_template"):
+            reply = self._render_rule_template(str(action.get("reply_template")), message, match, extra={"output": output})
+        else:
+            prefix = "Tool command completed." if result.ok else "Tool command failed."
+            reply = f"{prefix} {output}"
+        return WhatsAppRuleResult(True, bool(reply.strip()), reply[:1200].strip(), f"rule:{rule_id}:tool", "" if result.ok else result.stderr)
+
+    @staticmethod
+    def _render_rule_template(template: str, message: str, match: re.Match[str], extra: dict[str, str] | None = None) -> str:
+        values = {"message": message}
+        values.update({str(index): value or "" for index, value in enumerate(match.groups(), start=1)})
+        values.update({key: value or "" for key, value in match.groupdict().items()})
+        if extra:
+            values.update(extra)
+        return re.sub(r"\{([A-Za-z0-9_]+)\}", lambda item: values.get(item.group(1), ""), template).strip()
 
     def _record_auto_reply(self, chat: str, message_hash: str, reply: str, source: str, status: str) -> None:
         self.storage.execute(
@@ -385,25 +435,17 @@ class WhatsAppWebService:
             event_path.unlink(missing_ok=True)
             return None
         self.capture_fingerprint(chat_key, event_id, body)
-        reply, source = self._reply_for(body)
-        if not reply:
-            allowed, reason = self._auto_reply_allowed(chat_key, auto)
-            if not allowed:
-                self._record_auto_reply(chat_key, event_id, "", "policy", "Blocked")
-                event_path.unlink(missing_ok=True)
-                return WhatsAppResult(False, reason)
-            fallback = self.smart_reply(body)
-            if not fallback.ok:
-                self._record_auto_reply(chat_key, event_id, "", "ai", "Blocked")
-                event_path.unlink(missing_ok=True)
-                return WhatsAppResult(False, "Unknown message was not sent because Noor could not prepare a reliable reply.", error=fallback.error)
-            reply, source = fallback.text, fallback.source
-        else:
-            allowed, reason = self._auto_reply_allowed(chat_key, auto, bypass_chat_cooldown=True)
-            if not allowed:
-                self._record_auto_reply(chat_key, event_id, "", "policy", "Blocked")
-                event_path.unlink(missing_ok=True)
-                return WhatsAppResult(False, reason)
+        rule_result = self._reply_for(body)
+        if not rule_result.matched:
+            self._record_auto_reply(chat_key, event_id, "", "no-rule", "Ignored")
+            event_path.unlink(missing_ok=True)
+            self.storage.log("info", "WhatsApp", "WhatsApp event ignored because no rule matched.", {"message_hash": event_id})
+            return WhatsAppResult(True, "No WhatsApp rule matched; no reply sent.", {"source": "no-rule"})
+        if not rule_result.ok or not rule_result.reply:
+            self._record_auto_reply(chat_key, event_id, "", rule_result.source or "rule-error", "Blocked")
+            event_path.unlink(missing_ok=True)
+            return WhatsAppResult(False, "Matched WhatsApp rule could not produce a reply.", error=rule_result.error)
+        reply, source = rule_result.reply, rule_result.source
         sent = self._request("send-reply", {"chat_id": chat_id, "chat_label": "Direct contact", "reply": reply})
         if not sent.ok:
             return sent
@@ -548,32 +590,4 @@ class WhatsAppWebService:
                 time.sleep(0.05)
 
     def _draft_allowed(self, chat: str) -> tuple[bool, str]:
-        settings = self.settings()
-        if str(settings.get("send_mode", "dry-run")) != "dry-run":
-            return False, "This version supports dry-run approval drafts only; sending is not implemented."
-        now = datetime.now().astimezone()
-        if self._quiet_hours(now, str(settings.get("quiet_hours_start", "22:00")), str(settings.get("quiet_hours_end", "08:00"))):
-            return False, "Quiet hours are active. The draft was not created."
-        cooldown = max(0, int(settings.get("cooldown_seconds", 120)))
-        latest = self.storage.fetch_one("SELECT created_at FROM escalations WHERE source = 'WhatsApp approval draft' AND title = ? ORDER BY created_at DESC LIMIT 1", (f"Reply approval: {chat[:120] or 'Unknown chat'}",))
-        if latest and cooldown:
-            prior = datetime.fromisoformat(latest["created_at"].replace("Z", "+00:00"))
-            if now.astimezone(timezone.utc) - prior < timedelta(seconds=cooldown):
-                return False, f"Cooldown is active for this chat. Wait {cooldown} seconds between drafts."
-        cutoff = (now.astimezone(timezone.utc) - timedelta(hours=1)).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-        count = self.storage.fetch_one("SELECT COUNT(*) AS c FROM escalations WHERE source = 'WhatsApp approval draft' AND created_at >= ?", (cutoff,))
-        if count and int(count["c"]) >= max(1, int(settings.get("max_drafts_per_hour", 6))):
-            return False, "Hourly WhatsApp draft limit reached."
         return True, ""
-
-    @staticmethod
-    def _quiet_hours(now: datetime, start: str, end: str) -> bool:
-        try:
-            start_time = datetime.strptime(start, "%H:%M").time()
-            end_time = datetime.strptime(end, "%H:%M").time()
-        except ValueError:
-            return False
-        if start_time == end_time:
-            return False
-        current = now.time()
-        return start_time <= current < end_time if start_time < end_time else current >= start_time or current < end_time

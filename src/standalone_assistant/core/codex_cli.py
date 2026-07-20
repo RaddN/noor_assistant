@@ -74,7 +74,7 @@ class CodexCli:
             else "Return a concise direct answer. Use bullets only when they improve clarity."
         )
         prompt = (
-            "You are Khadija Noor's assistant fallback brain. Do not edit files, run commands, "
+            "You are Noor, Raihan Hossain's assistant fallback brain. Do not edit files, run commands, "
             "or claim that you completed external actions. Answer only from the user message and "
             "the supplied research context. If the context is weak, say what is uncertain.\n\n"
             f"{channel_rule}\n\n"

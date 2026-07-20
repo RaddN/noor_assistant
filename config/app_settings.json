@@ -14,7 +14,7 @@
   "escalation": {
     "enabled": false,
     "teams_enabled": false,
-    "find_hub_enabled": false,
+    "find_hub_enabled": true,
     "owner_phone_enabled": false,
     "backup_phone_enabled": false,
     "quiet_hours_start": "22:00",
@@ -36,11 +36,12 @@
     "gemini_enabled": true,
     "codex_enabled": true,
     "cache_hours": 24,
-    "max_research_pages": 3,
-    "max_gemini_calls_per_hour": 4,
-    "max_codex_calls_per_hour": 2,
-    "provider_cooldown_minutes": 20,
-    "whatsapp_ai_for_questions_only": true
+    "max_research_pages": 3
+  },
+  "find_phone": {
+    "enabled": true,
+    "url": "https://www.google.com/android/find/",
+    "mode": "play_sound_only"
   },
   "codex_ai": {
     "enabled": true,
@@ -57,12 +58,8 @@
   "whatsapp_web": {
     "enabled": true,
     "auto_start": true,
-    "send_mode": "dry-run",
+    "send_mode": "active",
     "store_private_messages": false,
-    "cooldown_seconds": 120,
-    "quiet_hours_start": "22:00",
-    "quiet_hours_end": "08:00",
-    "max_drafts_per_hour": 6,
     "max_messages_per_read": 25
   },
   "gemini_cli": {
@@ -74,13 +71,13 @@
   "whatsapp_auto_reply": {
     "enabled": true,
     "poll_seconds": 12,
-    "cooldown_seconds": 180,
-    "max_replies_per_hour": 4,
     "skip_groups": true
   },
   "identity": {
-    "name": "Khadija Noor",
-    "nickname": "Noor"
+    "name": "Noor",
+    "nickname": "Noor",
+    "owner_name": "Raihan Hossain",
+    "owner_role": "boss and developer"
   },
   "voice": {
     "enabled": true,

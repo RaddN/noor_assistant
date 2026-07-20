@@ -7,10 +7,11 @@ from pathlib import Path
 from standalone_assistant.core.ai_response import AIResponseService
 from standalone_assistant.core.connectors import ToolRegistry
 from standalone_assistant.core.connections import connection_snapshot
+from standalone_assistant.core.find_phone import FindPhoneService
 from standalone_assistant.core.google_productivity import GoogleProductivityService
 from standalone_assistant.core.paths import PROJECT_ROOT
 from standalone_assistant.core.storage import Storage
-from standalone_assistant.core.time_parser import parse_when
+from standalone_assistant.core.time_parser import format_local_datetime, parse_when
 from standalone_assistant.core.whatsapp_web import WhatsAppWebService
 from standalone_assistant.core.web_research import ResearchResult, answer_question, news, search_web, weather
 
@@ -29,8 +30,10 @@ class AssistantBrain:
     def identity(self) -> dict[str, str]:
         identity = self.storage.get_setting("identity", {})
         return {
-            "name": str(identity.get("name") or "Khadija Noor"),
+            "name": str(identity.get("name") or "Noor"),
             "nickname": str(identity.get("nickname") or "Noor"),
+            "owner_name": str(identity.get("owner_name") or "Raihan Hossain"),
+            "owner_role": str(identity.get("owner_role") or "boss and developer"),
         }
 
     def answer(self, message: str) -> AssistantReply:
@@ -41,14 +44,14 @@ class AssistantBrain:
             return AssistantReply(f"{identity['nickname']} is here. Ask me about tasks, tools, projects, Codex, Google, WhatsApp, weather, news, or research.")
 
         if lowered in {"hi", "hello", "hey", "assalamualaikum", "salam"}:
-            return AssistantReply(f"Hello. I am {identity['nickname']}. I can check your tools, projects, Codex, approvals, tasks, weather, news, or do a quick web research.")
+            return AssistantReply(f"Hello. I am {identity['nickname']}, Raihan Hossain's assistant. I can check tools, projects, Codex, approvals, tasks, WhatsApp, Find My Phone, weather, news, or research.")
 
         if lowered in {"what is your name", "what is your name?", "what's your name", "what's your name?", "who are you"}:
-            return AssistantReply(f"My name is {identity['name']}. You can call me {identity['nickname']}. I help with your tools, projects, Codex, tasks, approvals, WhatsApp status, weather, news, and quick research.")
+            return AssistantReply(f"My name is {identity['name']}. You can call me {identity['nickname']}. I work for {identity['owner_name']} and help with tools, projects, Codex, tasks, approvals, WhatsApp, Find My Phone, weather, news, and research.")
 
         if lowered in {"what can you do", "help", "commands", "what can you do?"}:
             return AssistantReply(
-                "You can ask: open tools, read summary, create todo, remind me, schedule event, calendar status, tool status, project status, Codex status, Google status, WhatsApp status, weather in Dhaka, latest news, or any research question."
+                "You can ask: open tools, read summary, create todo, remind me, schedule event, find my phone, calendar status, tool status, project status, Codex status, Google status, WhatsApp status, weather in Dhaka, latest news, or any research question."
             )
 
         setting_reply = self.apply_setting_command(lowered)
@@ -88,6 +91,11 @@ class AssistantBrain:
 
         if "whatsapp" in lowered or "reply approval" in lowered:
             return AssistantReply(self.whatsapp_status())
+
+        if "find my phone" in lowered or "ring my phone" in lowered or "find phone" in lowered or "locate my phone" in lowered:
+            result = FindPhoneService(self.storage).open_find_hub()
+            text = result.message if result.ok else f"{result.message} {result.error}".strip()
+            return AssistantReply(text)
 
         entity = self.local_entity_answer(lowered)
         if entity:
@@ -184,7 +192,7 @@ class AssistantBrain:
                 result = google.create_task(title, due=parsed.start, interactive=False)
                 if result.ok:
                     self.add_local_task(title, parsed.start.isoformat(), "Google Task")
-                    return f"{result.message}. Due {parsed.start.strftime('%Y-%m-%d %H:%M')}."
+                    return f"{result.message}. Due {format_local_datetime(parsed.start)}."
                 return f"{result.message} {result.error}".strip()
 
         reminder_prefixes = ["remind me to", "create reminder to", "add reminder to", "reminder to"]
@@ -202,7 +210,7 @@ class AssistantBrain:
                 )
                 if result.ok:
                     self.add_local_task(title, parsed.start.isoformat(), "Google Calendar reminder")
-                    return f"{result.message}. Reminder time {parsed.start.strftime('%Y-%m-%d %H:%M')}."
+                    return f"{result.message}. Reminder time {format_local_datetime(parsed.start)}."
                 return f"{result.message} {result.error}".strip()
 
         event_prefixes = ["create event", "add event", "schedule event", "schedule meeting", "create meeting", "add meeting"]
@@ -213,7 +221,7 @@ class AssistantBrain:
                 title = parsed.cleaned_text or raw_title or "Calendar event"
                 result = google.create_event(title, start=parsed.start, end=parsed.end, reminders_minutes=[30, 10], interactive=False)
                 if result.ok:
-                    return f"{result.message}. Starts {parsed.start.strftime('%Y-%m-%d %H:%M')}."
+                    return f"{result.message}. Starts {format_local_datetime(parsed.start)}."
                 return f"{result.message} {result.error}".strip()
 
         return ""

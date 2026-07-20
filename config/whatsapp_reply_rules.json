@@ -2,26 +2,102 @@
   {
     "id": "greeting",
     "pattern": "^\\s*(hi|hello|hey|assalamu alaikum|assalamualaikum|salam)\\b",
-    "reply": "Hello. I am Noor, Khadija Noor's assistant. How can I help?"
+    "reply": "Hello. I am Noor, Raihan Hossain's assistant. Send a supported command or question and I will handle it."
   },
   {
     "id": "availability",
     "pattern": "\\b(are you there|available|free now)\\b",
-    "reply": "I am here. Please share the detail and I will help or prepare it for Khadija Noor."
+    "reply": "I am here. Send a supported command and I will handle it for Raihan Hossain."
   },
   {
-    "id": "status",
-    "pattern": "\\b(status|update|progress)\\b",
-    "reply": "I have received your message. I will prepare the relevant update for Khadija Noor."
+    "id": "find-phone",
+    "pattern": "\\b(find|ring|locate)\\s+(my\\s+)?phone\\b",
+    "action": {
+      "type": "assistant",
+      "prompt": "find my phone"
+    }
   },
   {
-    "id": "capabilities",
-    "pattern": "\\b(what can you do|how can you help|what do you do)\\b",
-    "reply": "I can receive your message, answer simple questions, and prepare a clear follow-up for Khadija Noor."
+    "id": "whatsapp-status",
+    "pattern": "\\b(whatsapp|wa)\\s+(status|connection)\\b",
+    "action": {
+      "type": "assistant",
+      "prompt": "WhatsApp status"
+    }
+  },
+  {
+    "id": "project-status",
+    "pattern": "\\b(project|projects)\\b.*\\b(status|progress|update)\\b|\\b(status|progress|update)\\b.*\\b(project|projects)\\b",
+    "action": {
+      "type": "assistant",
+      "prompt": "project status"
+    }
+  },
+  {
+    "id": "tool-status",
+    "pattern": "\\b(tool|tools|connected tools)\\b.*\\b(status|check|available)\\b|\\b(status|check)\\b.*\\b(tool|tools|connected tools)\\b",
+    "action": {
+      "type": "assistant",
+      "prompt": "tool status"
+    }
+  },
+  {
+    "id": "google-status",
+    "pattern": "\\b(google|calendar|task|tasks|todo|todos)\\b.*\\b(status|check|upcoming|due)\\b",
+    "action": {
+      "type": "assistant",
+      "prompt": "{message}"
+    }
+  },
+  {
+    "id": "research-question",
+    "pattern": "^\\s*(research|search)\\s+(?P<query>.+)",
+    "action": {
+      "type": "assistant",
+      "prompt": "research {query}"
+    }
+  },
+  {
+    "id": "ask-noor-ai",
+    "pattern": "^\\s*(ask noor|answer|question)[:\\s]+(?P<question>.+)",
+    "action": {
+      "type": "ai",
+      "provider": "auto",
+      "prompt": "{question}"
+    }
+  },
+  {
+    "id": "ask-gemini",
+    "pattern": "^\\s*(gemini|ask gemini)[:\\s]+(?P<question>.+)",
+    "action": {
+      "type": "ai",
+      "provider": "gemini",
+      "prompt": "{question}"
+    }
+  },
+  {
+    "id": "ask-codex",
+    "pattern": "^\\s*(codex|ask codex)[:\\s]+(?P<question>.+)",
+    "action": {
+      "type": "ai",
+      "provider": "codex",
+      "prompt": "{question}"
+    }
+  },
+  {
+    "id": "content-review-dry-run",
+    "pattern": "\\b(content review|content-review-manager)\\b.*\\b(dry run|test|check)\\b",
+    "action": {
+      "type": "tool",
+      "tool_id": "content-review-manager",
+      "command_index": 0,
+      "summarize_with": "auto",
+      "summary_prompt": "Summarize this content-review-manager dry-run output for a concise WhatsApp reply."
+    }
   },
   {
     "id": "thanks",
     "pattern": "\\b(thanks|thank you|jazakallah)\\b",
-    "reply": "You are welcome. I have received your message."
+    "reply": "You are welcome."
   }
 ]

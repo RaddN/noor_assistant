@@ -11,7 +11,7 @@ from standalone_assistant.ui.main_window import MainWindow
 
 
 def main() -> int:
-    instance_lock = acquire_single_instance("ESEO_Khadija_Noor_Assistant")
+    instance_lock = acquire_single_instance("ESEO_Noor_Assistant")
     if instance_lock is None:
         return 0
 

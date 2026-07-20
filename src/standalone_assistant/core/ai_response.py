@@ -36,10 +36,6 @@ class AIResponseService:
             "codex_enabled": True,
             "cache_hours": 24,
             "max_research_pages": 3,
-            "max_gemini_calls_per_hour": 4,
-            "max_codex_calls_per_hour": 2,
-            "provider_cooldown_minutes": 20,
-            "whatsapp_ai_for_questions_only": True,
         }
         configured = self.storage.get_setting("ai_brain", {})
         if isinstance(configured, dict):
@@ -53,9 +49,6 @@ class AIResponseService:
         settings = self.settings()
         if not bool(settings.get("enabled", True)):
             return AIResponse(False, error="AI response pipeline is disabled.")
-
-        if channel == "whatsapp" and bool(settings.get("whatsapp_ai_for_questions_only", True)) and not self._looks_answerable(message):
-            return AIResponse(True, "I have received your message. I will prepare the relevant update for Khadija Noor.", "local-ack")
 
         cached = self._read_cache(message, channel, int(settings.get("cache_hours", 24)))
         if cached:
@@ -89,6 +82,29 @@ class AIResponseService:
 
         return AIResponse(False, error=research.error or "No reliable answer source was available.")
 
+    def answer_with_provider(self, provider: str, user_message: str, *, channel: str = "assistant", context: str = "") -> AIResponse:
+        provider = provider.strip().casefold() or "auto"
+        message = user_message.strip()
+        if provider in {"auto", "brain", "fallback"}:
+            return self.answer(message, channel=channel)
+        settings = self.settings()
+        if not bool(settings.get("enabled", True)):
+            return AIResponse(False, source=provider, error="AI response pipeline is disabled.")
+        if provider == "research":
+            research = self._research(message, settings)
+            if not research.ok:
+                return AIResponse(False, source=provider, error=research.error or "Research failed.")
+            return AIResponse(True, self._format_research_answer(research, channel), f"research:{research.confidence}")
+        if provider == "gemini":
+            if not bool(settings.get("gemini_enabled", True)):
+                return AIResponse(False, source=provider, error="Gemini fallback is disabled in Settings.")
+            return self._gemini(message, channel, context, settings)
+        if provider == "codex":
+            if not bool(settings.get("codex_enabled", True)):
+                return AIResponse(False, source=provider, error="Codex fallback is disabled in Settings.")
+            return self._codex(message, channel, context, settings)
+        return AIResponse(False, source=provider, error=f"Unknown AI provider: {provider}")
+
     def _research(self, message: str, settings: dict[str, Any]) -> ResearchResult:
         if not bool(settings.get("research_enabled", True)):
             return ResearchResult(False, "Research disabled", "", [], "Research is disabled.")
@@ -96,10 +112,6 @@ class AIResponseService:
 
     def _gemini(self, message: str, channel: str, context: str, settings: dict[str, Any]) -> AIResponse:
         provider = "gemini"
-        if not self._provider_available(provider, settings):
-            return AIResponse(False, source=provider, error="Gemini is cooling down after a recent failure.")
-        if not self._within_rate_limit(provider, int(settings.get("max_gemini_calls_per_hour", 4))):
-            return AIResponse(False, source=provider, error="Gemini hourly limit reached.")
         result = GeminiCli(self.storage.get_setting("gemini_cli", {}), self.workspace).answer(message, channel=channel, context=context)
         if result.ok:
             self._log_provider(provider, "used")
@@ -109,43 +121,12 @@ class AIResponseService:
 
     def _codex(self, message: str, channel: str, context: str, settings: dict[str, Any]) -> AIResponse:
         provider = "codex"
-        if not self._provider_available(provider, settings):
-            return AIResponse(False, source=provider, error="Codex is cooling down after a recent failure.")
-        if not self._within_rate_limit(provider, int(settings.get("max_codex_calls_per_hour", 2))):
-            return AIResponse(False, source=provider, error="Codex hourly limit reached.")
         result = CodexCli(self.storage.get_setting("codex_ai", {}), self.workspace).answer(message, channel=channel, context=context)
         if result.ok:
             self._log_provider(provider, "used")
             return AIResponse(True, self._clean_ai_text(result.text, channel), provider)
         self._log_provider(provider, "failed", result.error)
         return AIResponse(False, source=provider, error=result.error)
-
-    def _within_rate_limit(self, provider: str, limit: int) -> bool:
-        if limit <= 0:
-            return False
-        cutoff = (datetime.now(timezone.utc) - timedelta(hours=1)).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-        pattern = f'"provider": "{provider}"'
-        row = self.storage.fetch_one(
-            "SELECT COUNT(*) AS c FROM activity WHERE source = 'AI Brain' AND message = 'AI provider used' AND ts >= ? AND metadata_json LIKE ?",
-            (cutoff, f"%{pattern}%"),
-        )
-        return not row or int(row["c"]) < limit
-
-    def _provider_available(self, provider: str, settings: dict[str, Any]) -> bool:
-        cooldown = max(0, min(int(settings.get("provider_cooldown_minutes", 20)), 240))
-        if cooldown == 0:
-            return True
-        row = self.storage.fetch_one(
-            "SELECT ts FROM activity WHERE source = 'AI Brain' AND message = 'AI provider failed' AND metadata_json LIKE ? ORDER BY id DESC LIMIT 1",
-            (f'%"provider": "{provider}"%',),
-        )
-        if not row:
-            return True
-        try:
-            prior = datetime.fromisoformat(row["ts"].replace("Z", "+00:00"))
-        except (TypeError, ValueError):
-            return True
-        return datetime.now(timezone.utc) - prior >= timedelta(minutes=cooldown)
 
     def _log_provider(self, provider: str, outcome: str, error: str = "") -> None:
         self.storage.log(

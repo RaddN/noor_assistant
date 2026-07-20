@@ -8,13 +8,13 @@ Build a professional local-first Windows assistant for ESEO that connects Google
 
 Assistant identity:
 
-- Full name: `Khadija Noor`
-- Nickname: `Noor`
+- Assistant: `Noor`
+- Owner: `Raihan Hossain`
 
 ## Completed
 
 - Created standalone project at `E:\ESEO\standalone-windows-assistant`.
-- Set the assistant identity to `Khadija Noor`, nickname `Noor`.
+- Set the assistant identity to `Noor` for owner `Raihan Hossain`.
 - Added PySide6 desktop app with local SQLite persistence.
 - Added assistant-style cockpit UI with central animated avatar, dark command console styling, module cards, command bar, and quick actions.
 - Added connection checks for Google Workspace, existing tools, default ESEO projects, local Codex CLI, and installed Windows voices.
@@ -66,13 +66,16 @@ Assistant identity:
 - Added a shared low-cost AI brain pipeline for assistant chat and WhatsApp replies: deterministic/local answer first, cached answer reuse, lightweight source-backed research, Gemini CLI fallback, then Codex CLI fallback with `gpt-5-mini` and low reasoning.
 - Added hybrid voice grammar for spoken productivity commands without using Gemini or another AI provider.
 - Added Connected Tools `Test All`.
-- Replaced the selector-driven WhatsApp bridge with an event-driven `whatsapp-web.js` bridge using an isolated local authentication session, duplicate fingerprints, privacy-safe capture, audit logging, quiet hours, per-chat cooldowns, and hourly reply limits.
-- Added a replaceable WhatsApp selector adapter in `config\whatsapp_web_selectors.json`; the bridge sends only a verified rule or a valid shared-brain reply to one unread direct chat at a time.
+- Replaced the selector-driven WhatsApp bridge with an event-driven `whatsapp-web.js` bridge using an isolated local authentication session, duplicate fingerprints, privacy-safe capture, and audit logging.
+- Added a replaceable WhatsApp selector adapter in `config\whatsapp_web_selectors.json`; the bridge sends only when a WhatsApp rule matches one unread direct chat at a time.
+- Upgraded WhatsApp rules from static replies to rule actions: direct reply, assistant command, research/Gemini/Codex AI reply, or configured safe tool command with optional AI summarization.
 - Added optional Gemini CLI draft/answer support using `where gemini`, non-interactive `--prompt` plus `--output-format json`, strict timeouts, safe JSON parsing, bounded context, and no `--yolo` mode.
 - Added optional Codex CLI answer fallback in read-only, ephemeral mode with explicit `gpt-5-mini` and low reasoning overrides so it does not inherit a high-cost default Codex config.
 - Upgraded `whatsapp-web.js` to `1.34.7`, bound it to the installed Google Chrome executable, and verified the dedicated event bridge reaches `CONNECTED` after QR authentication.
-- Confirmed Gemini CLI `0.51.0` and Codex CLI `0.128.0` are both detectable on this machine; answer generation remains gated by Settings, caching, hourly limits, and provider cooldowns.
-- Replaced the selected `Khodeja Poly` test with direct-message auto replies for any unread contact: rules first, Gemini fallback only on a valid response, per-chat cooldown, hourly cap, group exclusion, duplicate protection, send-time chat/message verification, and audit records.
+- Confirmed Gemini CLI `0.51.0` and Codex CLI `0.128.0` are both detectable on this machine; answer generation remains gated by explicit commands/rules and Settings.
+- Replaced the selected `Khodeja Poly` test with direct-message auto replies for any unread contact: matching rules only, no WhatsApp cooldowns or hourly limits, group exclusion, duplicate protection, send-time chat/message verification, and audit records.
+- Added Find My Phone support through Google Find Hub in play-sound-only mode.
+- Switched visible Noor timestamps to 12-hour AM/PM display.
 - Fixed launcher/startup stability:
   - `run_app.bat` now delegates to `run_noor_silent.vbs` instead of reinstalling dependencies on every launch;
   - `run_noor_silent.vbs` uses `pythonw.exe` when available;
@@ -151,14 +154,14 @@ Assistant identity:
 5. Add structured report readers for the four existing tools.
 6. Add a compact browser-research mode for deeper research tasks.
 7. Add a compatible Gemini CLI authentication route if unknown-message replies are required without an API key.
-8. Add Teams and Find Hub only after acknowledgement, cooldown, and manual test screens are finished.
+8. Add Teams only after acknowledgement and manual test screens are finished.
 
 ## Security Notes
 
 - Existing Google token and credential files are checked for presence only; contents are not opened or printed.
 - No browser profile, token, or credential is committed.
-- WhatsApp automatic sending is limited to unread direct chats that match a local rule or receive a valid shared-brain reply. It has duplicate protection, chat/message verification, quiet hours, per-chat cooldowns, hourly caps, group exclusion by default, and an audit trail.
-- Find Hub must stay play-sound-only when implemented.
+- WhatsApp automatic sending is limited to unread direct chats that match a local rule. Unmatched messages are ignored. It has duplicate protection, chat/message verification, group exclusion by default, and an audit trail.
+- Find My Phone opens Google Find Hub and stays play-sound-only; Google/browser device selection remains manual.
 - Voice uses local Windows speech APIs, not Gemini and not an AI model.
 
 ## Runtime Notes

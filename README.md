@@ -1,6 +1,6 @@
-# Khadija Noor
+# Noor Assistant
 
-Local-first PySide6 desktop assistant for daily work, connected tools, project tracking, Codex sessions, tasks, rules, approvals, and escalation state. The assistant's full name is `Khadija Noor`; her nickname is `Noor`.
+Local-first PySide6 desktop assistant for Raihan Hossain's daily work, connected tools, project tracking, Codex sessions, tasks, rules, approvals, and escalation state. The assistant is `Noor`.
 
 ## Launch
 
@@ -51,18 +51,18 @@ Built now:
 - Basic assistant chat for greetings, status questions, weather, news, web research, and optional AI fallback answers
 - Tool and project knowledge from the local connector/project registries
 - Google Tasks and Google Calendar productivity commands after one-time OAuth authorization
+- Find My Phone launcher through Google Find Hub
 - Scrollable pages so the assistant cockpit remains usable on smaller windows
 
 Not live yet:
 
 - Bulk messaging, chat-history export, and group-chat auto replies.
 - Microsoft Teams automation
-- Google Find Hub device ringing
 - Automatic reminder sending outside Google Calendar event reminders
 - Free-form conversational voice understanding
 - Full browser-controlled research sessions
 
-Those are intentionally staged behind manual setup, acknowledgement tracking, audit history, cooldowns, allowlists, and test controls.
+Those are intentionally staged behind manual setup, acknowledgement tracking, audit history, allowlists, and test controls.
 
 ## WhatsApp Web Bridge
 
@@ -70,13 +70,14 @@ Noor uses an isolated `whatsapp-web.js` session at `data\whatsapp-webjs-auth`; s
 
 - It receives new direct-message events instead of polling or exporting chat history.
 - It records a stable message fingerprint for duplicate protection. Incoming message text is not stored unless **Store message previews** is enabled in Settings.
-- Matching rules in `config\whatsapp_reply_rules.json` send direct replies. Unknown messages use Noor's shared brain pipeline and are only sent when a reliable reply is produced.
-- Groups are skipped by default. Quiet hours, per-chat cooldowns, hourly limits, chat verification immediately before sending, and audit history are applied before a reply is sent.
+- Matching rules in `config\whatsapp_reply_rules.json` decide whether to send a direct reply, run an assistant action, call research/Gemini/Codex, or run a configured safe tool command.
+- Unmatched messages are ignored. There are no WhatsApp quiet-hour, cooldown, or hourly reply limits.
+- Groups are skipped by default. Duplicate protection, chat verification immediately before sending, and audit history are applied before a reply is sent.
 - It uses an unofficial WhatsApp Web client, so WhatsApp-side changes can require a library update.
 
 ### Automatic Replies
 
-When automatic replies are enabled in **Settings**, Noor checks unread direct chats every 12 seconds. A `hello` or `hi` matches the included greeting rule and replies automatically from any direct contact. Add or change rules in `config\whatsapp_reply_rules.json`; they apply on the next check. Restart the app after changing browser selectors. Unknown messages use the same low-cost brain as assistant chat: cached answer, lightweight research, Gemini CLI, then Codex CLI. If no reliable answer is available, the message is recorded as blocked and is not sent.
+When automatic replies are enabled in **Settings**, Noor checks unread direct chats every 12 seconds. A `hello` or `hi` matches the included greeting rule and replies automatically from any direct contact. Add or change rules in `config\whatsapp_reply_rules.json`; they apply on the next check. Rules can use `reply`, `assistant`, `ai`, `research`, `gemini`, `codex`, or `tool` actions. Unmatched messages are recorded as ignored and no reply is sent.
 
 Install the local browser runtime once after installing dependencies:
 
@@ -91,9 +92,9 @@ Noor's default brain is local and deterministic: rules, trusted notes, tool/proj
 1. Reuse a recent cached answer.
 2. Do lightweight web research and answer from extracted source evidence when confidence is medium or high.
 3. Use Gemini CLI with bounded context and a strict timeout.
-4. Use Codex CLI only if Gemini fails or is rate-limited.
+4. Use Codex CLI if Gemini fails or is unavailable.
 
-Gemini is detected on Windows using `where gemini`; Codex is detected using the local `codex` launcher. The Codex fallback is separate from editable Codex sessions and runs read-only with `gpt-5-mini`, low reasoning, ephemeral mode, and a short timeout by default. WhatsApp fallback can be limited to messages that look like questions so casual acknowledgements do not spend AI quota.
+Gemini is detected on Windows using `where gemini`; Codex is detected using the local `codex` launcher. The Codex fallback is separate from editable Codex sessions and runs read-only with `gpt-5-mini`, low reasoning, ephemeral mode, and a short timeout by default. WhatsApp only uses AI when a matching rule explicitly requests it.
 
 ## Connected Tools
 
@@ -258,5 +259,5 @@ Ignored local-only paths include:
 - Risky commands are approval-required.
 - File deletion, database changes, dependency installation, plugin installation, commits, pushes, pull requests, and production changes are approval-required.
 - Escalation integrations are disabled until configured and tested.
-- Find Hub ringing is disabled and has no automatic device selection.
+- Find My Phone opens Google Find Hub in play-sound-only mode; the browser session still controls device selection.
 - No credentials are stored in source code.

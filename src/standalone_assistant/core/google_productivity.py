@@ -15,7 +15,7 @@ from googleapiclient.errors import HttpError
 
 from standalone_assistant.core.paths import GOOGLE_PRODUCTIVITY_TOKEN
 from standalone_assistant.core.storage import Storage
-from standalone_assistant.core.time_parser import google_datetime, google_task_due
+from standalone_assistant.core.time_parser import format_local_timestamp, google_datetime, google_task_due
 
 
 SCOPES = [
@@ -316,8 +316,7 @@ class GoogleProductivityService:
             return ""
         try:
             if "T" in value:
-                parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-                return parsed.astimezone(ZoneInfo("Asia/Dhaka")).strftime("%Y-%m-%d %H:%M")
+                return format_local_timestamp(value)
             return value
         except ValueError:
             return value
