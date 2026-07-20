@@ -1,0 +1,77 @@
+{
+  "approvals": {
+    "file_deletion": true,
+    "database_changes": true,
+    "plugin_installation": true,
+    "dependency_installation": true,
+    "git_commits": true,
+    "git_pushes": true,
+    "pull_request_creation": true,
+    "production_changes": true,
+    "sending_messages": true,
+    "risky_commands": true
+  },
+  "escalation": {
+    "enabled": false,
+    "teams_enabled": false,
+    "find_hub_enabled": false,
+    "owner_phone_enabled": false,
+    "backup_phone_enabled": false,
+    "quiet_hours_start": "22:00",
+    "quiet_hours_end": "08:00",
+    "teams_delay_minutes": 5,
+    "owner_phone_delay_minutes": 10,
+    "backup_phone_delay_minutes": 15,
+    "max_attempts": 2,
+    "acknowledgement_words": ["ack", "seen", "handled"]
+  },
+  "codex": {
+    "default_sandbox_for_analysis": "read-only",
+    "default_sandbox_for_edits": "workspace-write",
+    "use_json_output": false
+  },
+  "privacy": {
+    "store_private_messages": false,
+    "teams_summary_level": "privacy-safe",
+    "write_secrets_to_logs": false
+  },
+  "whatsapp_web": {
+    "enabled": true,
+    "auto_start": true,
+    "send_mode": "dry-run",
+    "store_private_messages": false,
+    "cooldown_seconds": 120,
+    "quiet_hours_start": "22:00",
+    "quiet_hours_end": "08:00",
+    "max_drafts_per_hour": 6,
+    "max_messages_per_read": 25
+  },
+  "gemini_cli": {
+    "enabled": false,
+    "timeout_seconds": 45,
+    "max_context_characters": 1600
+  },
+  "whatsapp_auto_reply": {
+    "enabled": true,
+    "poll_seconds": 12,
+    "cooldown_seconds": 180,
+    "max_replies_per_hour": 4,
+    "skip_groups": true
+  },
+  "identity": {
+    "name": "Khadija Noor",
+    "nickname": "Noor"
+  },
+  "voice": {
+    "enabled": true,
+    "tts_provider": "edge",
+    "edge_voice": "en-US-JennyNeural",
+    "voice_name": "",
+    "rate": -1,
+    "volume": 100,
+    "listen_timeout_seconds": 8,
+    "min_confidence": 0.35,
+    "recognition_mode": "hybrid",
+    "speak_confirmations": true
+  }
+}

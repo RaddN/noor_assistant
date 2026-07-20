@@ -1,0 +1,188 @@
+[
+  {
+    "id": "google-workspace",
+    "name": "Google Workspace",
+    "path": "E:\\ESEO\\content-review-manager",
+    "kind": "google-workspace-oauth",
+    "capabilities": [
+      "Google Sheets source of truth",
+      "Google Docs research and issue documents",
+      "Google Drive file access through the content tools",
+      "OAuth-backed local workflow"
+    ],
+    "permissions": [
+      "Google OAuth",
+      "Google Sheets API",
+      "Google Docs API",
+      "Google Drive API"
+    ],
+    "sensitive_paths": [
+      "credentials.json",
+      ".secrets\\token.json"
+    ],
+    "open_command": {
+      "label": "Open Google tool folder",
+      "cwd": "E:\\ESEO\\content-review-manager",
+      "args": ["explorer.exe", "E:\\ESEO\\content-review-manager"]
+    },
+    "test_command": null,
+    "safe_commands": []
+  },
+  {
+    "id": "content-review-manager",
+    "name": "Content Review Manager",
+    "path": "E:\\ESEO\\content-review-manager",
+    "kind": "python-pyside-google-workflow",
+    "capabilities": [
+      "content review",
+      "Google Sheets status updates",
+      "Google Docs issue report creation",
+      "writer research pack creation"
+    ],
+    "permissions": [
+      "Google OAuth",
+      "Google Sheets API",
+      "Google Docs API",
+      "Google Drive API",
+      "local refresh token in .secrets"
+    ],
+    "sensitive_paths": [
+      ".secrets\\token.json",
+      "credentials.json"
+    ],
+    "open_command": {
+      "label": "Open review app",
+      "cwd": "E:\\ESEO\\content-review-manager",
+      "args": ["cmd", "/c", "run_app.bat"]
+    },
+    "test_command": {
+      "label": "Dry-run one review row",
+      "cwd": "E:\\ESEO\\content-review-manager",
+      "args": [".\\.venv\\Scripts\\python.exe", "content_review_manager.py", "review", "--dry-run", "--limit", "1"],
+      "timeout_seconds": 45
+    },
+    "safe_commands": [
+      {
+        "label": "Show review CLI help",
+        "cwd": "E:\\ESEO\\content-review-manager",
+        "args": [".\\.venv\\Scripts\\python.exe", "content_review_manager.py", "--help"],
+        "timeout_seconds": 15
+      },
+      {
+        "label": "Open writer app",
+        "cwd": "E:\\ESEO\\content-review-manager",
+        "args": ["cmd", "/c", "run_writer_app.bat"]
+      }
+    ]
+  },
+  {
+    "id": "elementor-builder",
+    "name": "Websites Build With Elementor",
+    "path": "E:\\ESEO\\Websites-build-with-elementor",
+    "kind": "elementor-template-preview",
+    "capabilities": [
+      "Elementor JSON template storage",
+      "local static preview",
+      "QA report generation",
+      "template listing"
+    ],
+    "permissions": [
+      "local filesystem",
+      "local preview server"
+    ],
+    "sensitive_paths": [],
+    "open_command": {
+      "label": "Open folder",
+      "cwd": "E:\\ESEO\\Websites-build-with-elementor",
+      "args": ["explorer.exe", "E:\\ESEO\\Websites-build-with-elementor"]
+    },
+    "test_command": {
+      "label": "List Elementor templates",
+      "cwd": "E:\\ESEO\\Websites-build-with-elementor",
+      "args": ["python", "preview_elementor_template.py", "--list"],
+      "timeout_seconds": 30
+    },
+    "safe_commands": [
+      {
+        "label": "Build latest preview without server",
+        "cwd": "E:\\ESEO\\Websites-build-with-elementor",
+        "args": ["python", "preview_elementor_template.py", "--latest", "--no-server"],
+        "timeout_seconds": 60
+      }
+    ]
+  },
+  {
+    "id": "gutenberg-builder",
+    "name": "Websites Build With Gutenberg",
+    "path": "E:\\ESEO\\Websites-build-with-gutenburg",
+    "kind": "gutenberg-spectra-preview",
+    "capabilities": [
+      "Gutenberg serialized block markup",
+      "Spectra block examples",
+      "local static preview",
+      "QA report generation"
+    ],
+    "permissions": [
+      "local filesystem",
+      "local preview server",
+      "PowerShell script execution"
+    ],
+    "sensitive_paths": [],
+    "open_command": {
+      "label": "Open folder",
+      "cwd": "E:\\ESEO\\Websites-build-with-gutenburg",
+      "args": ["explorer.exe", "E:\\ESEO\\Websites-build-with-gutenburg"]
+    },
+    "test_command": {
+      "label": "List Gutenberg block files",
+      "cwd": "E:\\ESEO\\Websites-build-with-gutenburg",
+      "args": ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", ".\\preview_gutenberg_blocks.ps1", "-List"],
+      "timeout_seconds": 30
+    },
+    "safe_commands": [
+      {
+        "label": "Preview latest without server",
+        "cwd": "E:\\ESEO\\Websites-build-with-gutenburg",
+        "args": ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", ".\\preview_gutenberg_blocks.ps1", "-Latest", "-NoServer"],
+        "timeout_seconds": 60
+      }
+    ]
+  },
+  {
+    "id": "wp-plugin-review-assistant",
+    "name": "WP Plugin Review Assistant",
+    "path": "C:\\Users\\user\\Desktop\\WP-Plugin-Review-Assistant",
+    "kind": "wordpress-plugin-review",
+    "capabilities": [
+      "WordPress plugin static review",
+      "Plugin Check orchestration",
+      "LocalWP runtime smoke",
+      "browser smoke",
+      "HTML JSON Markdown reports",
+      "Codex fix prompts"
+    ],
+    "permissions": [
+      "local filesystem",
+      "LocalWP",
+      "WP-CLI",
+      "optional Playwright browser",
+      "optional dependency install for Playwright browser setup"
+    ],
+    "sensitive_paths": [
+      "settings.json",
+      "wp_plugin_review.log"
+    ],
+    "open_command": {
+      "label": "Open review app",
+      "cwd": "C:\\Users\\user\\Desktop\\WP-Plugin-Review-Assistant",
+      "args": ["cmd", "/c", "run.bat"]
+    },
+    "test_command": {
+      "label": "Show CLI help",
+      "cwd": "C:\\Users\\user\\Desktop\\WP-Plugin-Review-Assistant",
+      "args": ["python", "main.py", "--help"],
+      "timeout_seconds": 20
+    },
+    "safe_commands": []
+  }
+]

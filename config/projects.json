@@ -1,0 +1,32 @@
+[
+  {
+    "name": "ESEO Standalone Assistant",
+    "path": "E:\\ESEO\\standalone-windows-assistant",
+    "agents_path": "",
+    "notes": "Main assistant project."
+  },
+  {
+    "name": "Content Review Manager",
+    "path": "E:\\ESEO\\content-review-manager",
+    "agents_path": "",
+    "notes": "Google Sheets and Docs content review and writer workflow."
+  },
+  {
+    "name": "Websites Build With Elementor",
+    "path": "E:\\ESEO\\Websites-build-with-elementor",
+    "agents_path": "",
+    "notes": "Elementor JSON templates and preview runner."
+  },
+  {
+    "name": "Websites Build With Gutenberg",
+    "path": "E:\\ESEO\\Websites-build-with-gutenburg",
+    "agents_path": "",
+    "notes": "Gutenberg and Spectra block markup workflow."
+  },
+  {
+    "name": "WP Plugin Review Assistant",
+    "path": "C:\\Users\\user\\Desktop\\WP-Plugin-Review-Assistant",
+    "agents_path": "",
+    "notes": "WordPress and WooCommerce plugin review assistant."
+  }
+]

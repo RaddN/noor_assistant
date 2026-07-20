@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "standalone-windows-assistant"
+version = "0.1.0"
+description = "Local-first Windows desktop assistant for ESEO daily work, tools, and Codex sessions."
+requires-python = ">=3.10"
+dependencies = [
+    "PySide6>=6.8.0",
+    "playwright>=1.52.0",
+]
+
+[project.scripts]
+standalone-assistant = "standalone_assistant.app:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

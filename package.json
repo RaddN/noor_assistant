@@ -1,0 +1,19 @@
+{
+  "name": "standalone-windows-assistant",
+  "version": "1.0.0",
+  "description": "Local-first PySide6 desktop assistant for daily work, connected tools, project tracking, Codex sessions, tasks, rules, approvals, and escalation state. The assistant's full name is `Khadija Noor`; her nickname is `Noor`.",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "whatsapp-web.js": "^1.34.7"
+  }
+}

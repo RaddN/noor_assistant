@@ -1,0 +1,27 @@
+[
+  {
+    "id": "greeting",
+    "pattern": "^\\s*(hi|hello|hey|assalamu alaikum|assalamualaikum|salam)\\b",
+    "reply": "Hello. I am Noor, Khadija Noor's assistant. How can I help?"
+  },
+  {
+    "id": "availability",
+    "pattern": "\\b(are you there|available|free now)\\b",
+    "reply": "I am here. Please share the detail and I will help or prepare it for Khadija Noor."
+  },
+  {
+    "id": "status",
+    "pattern": "\\b(status|update|progress)\\b",
+    "reply": "I have received your message. I will prepare the relevant update for Khadija Noor."
+  },
+  {
+    "id": "capabilities",
+    "pattern": "\\b(what can you do|how can you help|what do you do)\\b",
+    "reply": "I can receive your message, answer simple questions, and prepare a clear follow-up for Khadija Noor."
+  },
+  {
+    "id": "thanks",
+    "pattern": "\\b(thanks|thank you|jazakallah)\\b",
+    "reply": "You are welcome. I have received your message."
+  }
+]

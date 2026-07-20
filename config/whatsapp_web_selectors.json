@@ -1,0 +1,53 @@
+{
+  "logged_in": [
+    "[aria-label='Chats']",
+    "[data-testid='chat-list']",
+    "[role='grid'][aria-label='Chat list']"
+  ],
+  "login_qr": [
+    "[data-testid='qrcode']",
+    "img[alt*='QR']"
+  ],
+  "chat_title": [
+    "[data-testid='conversation-info-header-chat-title']",
+    "[data-testid='conversation-header'] [title]"
+  ],
+  "unread_tab": [
+    "button:has-text('Unread')",
+    "[role='tab'][aria-label^='Unread']",
+    "[role='tab'][aria-label*='Unread']"
+  ],
+  "unread_rows": [
+    "[role='grid'][aria-label='Chat list'] [role='row']",
+    "[data-testid='chat-list'] [role='row']"
+  ],
+  "unread_badges": [
+    "[aria-label*='unread message']",
+    "[aria-label*='unread messages']",
+    "[data-icon='unread-count']"
+  ],
+  "unread_divider": [
+    "text=/^\\d+ unread message$/"
+  ],
+  "group_indicators": [
+    "[data-testid='conversation-header'] [data-icon='default-group']",
+    "header [data-icon='default-group']"
+  ],
+  "message_rows": [
+    "[data-testid='msg-container']",
+    "[data-pre-plain-text]"
+  ],
+  "composer": [
+    "div[contenteditable='true'][aria-placeholder='Type a message']",
+    "footer [contenteditable='true'][role='textbox']",
+    "[data-testid='conversation-compose-box-input']"
+  ],
+  "send_button": [
+    "button[aria-label='Send']",
+    "[data-testid='send']"
+  ],
+  "outgoing_metadata_markers": [
+    "you:",
+    "you "
+  ]
+}
