@@ -166,6 +166,14 @@ class Storage:
                     value_json TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS ai_response_cache (
+                    prompt_hash TEXT PRIMARY KEY,
+                    channel TEXT NOT NULL,
+                    response TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
                 """
             )
         self.seed_settings()

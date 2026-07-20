@@ -1619,17 +1619,72 @@ class SettingsPage(BasePage):
         auto_reply_layout.addRow("Replies per hour", self.whatsapp_auto_rate_limit)
         auto_reply_layout.addRow("", self.whatsapp_skip_groups)
 
+        ai_box = QGroupBox("AI Brain")
+        ai_layout = QFormLayout(ai_box)
+        ai_brain = self.storage.get_setting("ai_brain", {})
+        self.ai_enabled = QCheckBox("Use fallback brain for unknown questions")
+        self.ai_enabled.setChecked(bool(ai_brain.get("enabled", True)))
+        self.ai_research_enabled = QCheckBox("Research before using AI")
+        self.ai_research_enabled.setChecked(bool(ai_brain.get("research_enabled", True)))
+        self.ai_gemini_enabled = QCheckBox("Use Gemini after weak research")
+        self.ai_gemini_enabled.setChecked(bool(ai_brain.get("gemini_enabled", True)))
+        self.ai_codex_enabled = QCheckBox("Use Codex if Gemini fails")
+        self.ai_codex_enabled.setChecked(bool(ai_brain.get("codex_enabled", True)))
+        self.ai_whatsapp_questions_only = QCheckBox("Use AI on WhatsApp questions only")
+        self.ai_whatsapp_questions_only.setChecked(bool(ai_brain.get("whatsapp_ai_for_questions_only", True)))
+        self.ai_cache_hours = QSpinBox()
+        self.ai_cache_hours.setRange(0, 168)
+        self.ai_cache_hours.setValue(int(ai_brain.get("cache_hours", 24)))
+        self.ai_research_pages = QSpinBox()
+        self.ai_research_pages.setRange(1, 5)
+        self.ai_research_pages.setValue(int(ai_brain.get("max_research_pages", 3)))
+        self.ai_gemini_limit = QSpinBox()
+        self.ai_gemini_limit.setRange(0, 20)
+        self.ai_gemini_limit.setValue(int(ai_brain.get("max_gemini_calls_per_hour", 4)))
+        self.ai_codex_limit = QSpinBox()
+        self.ai_codex_limit.setRange(0, 10)
+        self.ai_codex_limit.setValue(int(ai_brain.get("max_codex_calls_per_hour", 2)))
+        ai_layout.addRow("", self.ai_enabled)
+        ai_layout.addRow("", self.ai_research_enabled)
+        ai_layout.addRow("", self.ai_gemini_enabled)
+        ai_layout.addRow("", self.ai_codex_enabled)
+        ai_layout.addRow("", self.ai_whatsapp_questions_only)
+        ai_layout.addRow("Cache hours", self.ai_cache_hours)
+        ai_layout.addRow("Research pages", self.ai_research_pages)
+        ai_layout.addRow("Gemini calls/hour", self.ai_gemini_limit)
+        ai_layout.addRow("Codex calls/hour", self.ai_codex_limit)
+
         gemini_box = QGroupBox("Gemini CLI")
         gemini_layout = QFormLayout(gemini_box)
         gemini = self.storage.get_setting("gemini_cli", {})
-        self.gemini_enabled = QCheckBox("Allow Gemini to prepare WhatsApp drafts")
-        self.gemini_enabled.setChecked(bool(gemini.get("enabled", False)))
+        self.gemini_enabled = QCheckBox("Allow Gemini fallback answers")
+        self.gemini_enabled.setChecked(bool(gemini.get("enabled", True)))
+        self.gemini_model = QLineEdit(str(gemini.get("model", "gemini-2.5-flash")))
         self.gemini_timeout = QSpinBox()
         self.gemini_timeout.setRange(10, 120)
         self.gemini_timeout.setValue(int(gemini.get("timeout_seconds", 45)))
         gemini_layout.addRow("", self.gemini_enabled)
+        gemini_layout.addRow("Model", self.gemini_model)
         gemini_layout.addRow("Timeout", self.gemini_timeout)
-        gemini_layout.addRow("Mode", QLabel("Non-interactive JSON only; approval mode default; no sending"))
+        gemini_layout.addRow("Mode", QLabel("Non-interactive JSON only; read-only approval mode; no sending"))
+
+        codex_ai_box = QGroupBox("Codex AI Fallback")
+        codex_ai_layout = QFormLayout(codex_ai_box)
+        codex_ai = self.storage.get_setting("codex_ai", {})
+        self.codex_ai_enabled = QCheckBox("Allow Codex final fallback")
+        self.codex_ai_enabled.setChecked(bool(codex_ai.get("enabled", True)))
+        self.codex_ai_model = QLineEdit(str(codex_ai.get("model", "gpt-5-mini")))
+        self.codex_ai_reasoning = QComboBox()
+        for value in ["low", "medium", "high"]:
+            self.codex_ai_reasoning.addItem(value, value)
+        self.codex_ai_reasoning.setCurrentText(str(codex_ai.get("reasoning_effort", "low")))
+        self.codex_ai_timeout = QSpinBox()
+        self.codex_ai_timeout.setRange(20, 180)
+        self.codex_ai_timeout.setValue(int(codex_ai.get("timeout_seconds", 60)))
+        codex_ai_layout.addRow("", self.codex_ai_enabled)
+        codex_ai_layout.addRow("Model", self.codex_ai_model)
+        codex_ai_layout.addRow("Reasoning", self.codex_ai_reasoning)
+        codex_ai_layout.addRow("Timeout", self.codex_ai_timeout)
 
         voice_box = QGroupBox("Voice")
         voice_layout = QFormLayout(voice_box)
@@ -1694,7 +1749,9 @@ class SettingsPage(BasePage):
         layout.addWidget(escalation_box)
         layout.addWidget(whatsapp_box)
         layout.addWidget(auto_reply_box)
+        layout.addWidget(ai_box)
         layout.addWidget(gemini_box)
+        layout.addWidget(codex_ai_box)
         layout.addWidget(voice_box)
         layout.addWidget(make_button("Save Settings", self.save), alignment=Qt.AlignRight)
         layout.addStretch()
@@ -1762,7 +1819,34 @@ class SettingsPage(BasePage):
         gemini.update(
             {
                 "enabled": self.gemini_enabled.isChecked(),
+                "model": self.gemini_model.text().strip() or "gemini-2.5-flash",
                 "timeout_seconds": self.gemini_timeout.value(),
+                "max_context_characters": int(gemini.get("max_context_characters", 2200)),
+            }
+        )
+        ai_brain = self.storage.get_setting("ai_brain", {})
+        ai_brain.update(
+            {
+                "enabled": self.ai_enabled.isChecked(),
+                "research_enabled": self.ai_research_enabled.isChecked(),
+                "gemini_enabled": self.ai_gemini_enabled.isChecked(),
+                "codex_enabled": self.ai_codex_enabled.isChecked(),
+                "cache_hours": self.ai_cache_hours.value(),
+                "max_research_pages": self.ai_research_pages.value(),
+                "max_gemini_calls_per_hour": self.ai_gemini_limit.value(),
+                "max_codex_calls_per_hour": self.ai_codex_limit.value(),
+                "provider_cooldown_minutes": int(ai_brain.get("provider_cooldown_minutes", 20)),
+                "whatsapp_ai_for_questions_only": self.ai_whatsapp_questions_only.isChecked(),
+            }
+        )
+        codex_ai = self.storage.get_setting("codex_ai", {})
+        codex_ai.update(
+            {
+                "enabled": self.codex_ai_enabled.isChecked(),
+                "model": self.codex_ai_model.text().strip() or "gpt-5-mini",
+                "reasoning_effort": self.codex_ai_reasoning.currentData() or "low",
+                "timeout_seconds": self.codex_ai_timeout.value(),
+                "max_context_characters": int(codex_ai.get("max_context_characters", 2200)),
             }
         )
         auto_reply = self.storage.get_setting("whatsapp_auto_reply", {})
@@ -1780,7 +1864,9 @@ class SettingsPage(BasePage):
         self.storage.set_setting("voice", voice)
         self.storage.set_setting("whatsapp_web", whatsapp)
         self.storage.set_setting("whatsapp_auto_reply", auto_reply)
+        self.storage.set_setting("ai_brain", ai_brain)
         self.storage.set_setting("gemini_cli", gemini)
+        self.storage.set_setting("codex_ai", codex_ai)
         self.storage.log("info", "Settings", "Settings updated.")
         if show_message:
             QMessageBox.information(self, "Settings", "Settings saved.")

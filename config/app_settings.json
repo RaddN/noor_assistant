@@ -30,6 +30,25 @@
     "default_sandbox_for_edits": "workspace-write",
     "use_json_output": false
   },
+  "ai_brain": {
+    "enabled": true,
+    "research_enabled": true,
+    "gemini_enabled": true,
+    "codex_enabled": true,
+    "cache_hours": 24,
+    "max_research_pages": 3,
+    "max_gemini_calls_per_hour": 4,
+    "max_codex_calls_per_hour": 2,
+    "provider_cooldown_minutes": 20,
+    "whatsapp_ai_for_questions_only": true
+  },
+  "codex_ai": {
+    "enabled": true,
+    "model": "gpt-5-mini",
+    "reasoning_effort": "low",
+    "timeout_seconds": 60,
+    "max_context_characters": 2200
+  },
   "privacy": {
     "store_private_messages": false,
     "teams_summary_level": "privacy-safe",
@@ -47,9 +66,10 @@
     "max_messages_per_read": 25
   },
   "gemini_cli": {
-    "enabled": false,
+    "enabled": true,
+    "model": "gemini-2.5-flash",
     "timeout_seconds": 45,
-    "max_context_characters": 1600
+    "max_context_characters": 2200
   },
   "whatsapp_auto_reply": {
     "enabled": true,

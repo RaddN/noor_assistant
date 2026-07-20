@@ -63,13 +63,15 @@ Assistant identity:
   - Tasks and Calendar pages show API-disabled errors instead of asking to reconnect;
   - added `Open Google API Setup` buttons for Google Tasks API and Google Calendar API.
 - Added automatic web research fallback when Noor has no reliable local answer.
+- Added a shared low-cost AI brain pipeline for assistant chat and WhatsApp replies: deterministic/local answer first, cached answer reuse, lightweight source-backed research, Gemini CLI fallback, then Codex CLI fallback with `gpt-5-mini` and low reasoning.
 - Added hybrid voice grammar for spoken productivity commands without using Gemini or another AI provider.
 - Added Connected Tools `Test All`.
 - Replaced the selector-driven WhatsApp bridge with an event-driven `whatsapp-web.js` bridge using an isolated local authentication session, duplicate fingerprints, privacy-safe capture, audit logging, quiet hours, per-chat cooldowns, and hourly reply limits.
-- Added a replaceable WhatsApp selector adapter in `config\whatsapp_web_selectors.json`; the bridge sends only a verified rule or valid Gemini reply to one unread direct chat at a time.
-- Added optional Gemini CLI draft support using `where gemini`, non-interactive `--prompt` plus `--output-format json`, strict timeouts, safe JSON parsing, minimum quoted context, and no `--yolo` mode.
+- Added a replaceable WhatsApp selector adapter in `config\whatsapp_web_selectors.json`; the bridge sends only a verified rule or a valid shared-brain reply to one unread direct chat at a time.
+- Added optional Gemini CLI draft/answer support using `where gemini`, non-interactive `--prompt` plus `--output-format json`, strict timeouts, safe JSON parsing, bounded context, and no `--yolo` mode.
+- Added optional Codex CLI answer fallback in read-only, ephemeral mode with explicit `gpt-5-mini` and low reasoning overrides so it does not inherit a high-cost default Codex config.
 - Upgraded `whatsapp-web.js` to `1.34.7`, bound it to the installed Google Chrome executable, and verified the dedicated event bridge reaches `CONNECTED` after QR authentication.
-- Installed Gemini CLI `0.51.0`; Noor detects it, but the current Google account/client is rejected with `IneligibleTierError`. Rule replies work without Gemini; unknown messages remain blocked until a compatible Gemini route is available.
+- Confirmed Gemini CLI `0.51.0` and Codex CLI `0.128.0` are both detectable on this machine; answer generation remains gated by Settings, caching, hourly limits, and provider cooldowns.
 - Replaced the selected `Khodeja Poly` test with direct-message auto replies for any unread contact: rules first, Gemini fallback only on a valid response, per-chat cooldown, hourly cap, group exclusion, duplicate protection, send-time chat/message verification, and audit records.
 - Fixed launcher/startup stability:
   - `run_app.bat` now delegates to `run_noor_silent.vbs` instead of reinstalling dependencies on every launch;
@@ -102,6 +104,10 @@ Assistant identity:
   - Google Calendar API live read currently returns API-disabled HTTP 403 from the Google Cloud project;
   - `google productivity status` reports the API-disabled state instead of telling the user to reconnect.
 - Unknown-answer fallback check: Noor automatically researched `what causes thunder`.
+- AI brain router smoke test: medium-confidence research answered before Gemini/Codex, and non-question WhatsApp text returned a local acknowledgement without spending AI calls.
+- WhatsApp unknown-message smart-reply smoke test: a simulated unread direct event used the shared AI reply path and wrote a `Sent` audit record with the reply source.
+- Codex/Gemini CLI detection check: `gemini --version` returned `0.51.0`; `codex --version` returned `codex-cli 0.128.0`.
+- AI Settings smoke test: offscreen UI construction loaded the AI Brain, Gemini, and Codex fallback controls with default `gpt-5-mini` and low reasoning.
 - UI smoke test confirmed every page is now wrapped in a scroll area.
 - WhatsApp automatic-reply rule-path test: a simulated unread direct `hello` produced the greeting reply only after chat and message-hash verification, then wrote a `Sent` audit record.
 - Dedicated WhatsApp bridge live-status check: connected profile with heartbeat validation; no unread chats were present at the time of the check.
@@ -119,11 +125,11 @@ Assistant identity:
 ## Partially Done
 
 - Voice commands use hybrid productivity grammar, not full open conversational dictation.
-- The app can speak confirmations and summaries, and it can answer with local deterministic knowledge plus web research fallback, but it is not using an AI language model.
+- The app can speak confirmations and summaries. Text answers now use local deterministic knowledge plus optional cached research, Gemini, and Codex fallbacks.
 - Google Workspace is connected by safely detecting the existing content workflow OAuth setup. Google Tasks/Calendar authorization is connected, but this machine's OAuth project still needs Google Tasks API and Google Calendar API enabled before live reads/creation can work.
 - Direct Google Sheets/Docs browsing inside this app is not implemented yet.
 - Codex sessions run through `codex exec`; interactive resume opens in a terminal.
-- Web research is lightweight and source-link oriented; it is not a full browser automation research agent yet.
+- Web research now extracts short source evidence from top result pages, but it is still lightweight and not a full browser automation research agent.
 - The UI is now assistant-style and scrollable, but more layout polish can still be added after testing on the real screen.
 
 ## Not Started Yet
@@ -151,7 +157,7 @@ Assistant identity:
 
 - Existing Google token and credential files are checked for presence only; contents are not opened or printed.
 - No browser profile, token, or credential is committed.
-- WhatsApp automatic sending is limited to unread direct chats that match a local rule or receive a valid Gemini CLI reply. It has duplicate protection, chat/message verification, quiet hours, per-chat cooldowns, hourly caps, group exclusion by default, and an audit trail.
+- WhatsApp automatic sending is limited to unread direct chats that match a local rule or receive a valid shared-brain reply. It has duplicate protection, chat/message verification, quiet hours, per-chat cooldowns, hourly caps, group exclusion by default, and an audit trail.
 - Find Hub must stay play-sound-only when implemented.
 - Voice uses local Windows speech APIs, not Gemini and not an AI model.
 

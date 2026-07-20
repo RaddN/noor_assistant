@@ -7,6 +7,7 @@ import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
+from urllib.error import HTTPError, URLError
 
 
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) ESEOAssistant/0.1 Safari/537.36"
@@ -30,6 +31,8 @@ class ResearchResult:
     summary: str
     links: list[str]
     error: str = ""
+    confidence: str = "low"
+    evidence_count: int = 0
 
 
 def fetch_text(url: str, timeout: int = 12) -> str:
@@ -45,6 +48,41 @@ def compact_text(value: str, limit: int = 900) -> str:
     if len(cleaned) <= limit:
         return cleaned
     return cleaned[: limit - 3].rstrip() + "..."
+
+
+def plain_text_from_html(value: str) -> str:
+    value = re.sub(r"(?is)<(script|style|noscript|svg).*?</\1>", " ", value)
+    value = re.sub(r"(?is)<br\s*/?>", "\n", value)
+    value = re.sub(r"(?is)</p>|</li>|</h[1-6]>", "\n", value)
+    value = re.sub(r"(?is)<.*?>", " ", value)
+    return compact_text(value, 9000)
+
+
+def domain_from_url(url: str) -> str:
+    try:
+        host = urllib.parse.urlparse(url).netloc.lower()
+    except ValueError:
+        return ""
+    return host[4:] if host.startswith("www.") else host
+
+
+def query_tokens(query: str) -> list[str]:
+    return [token for token in re.findall(r"[a-z0-9]{4,}", query.lower()) if token not in STOPWORDS]
+
+
+def split_sentences(text: str) -> list[str]:
+    parts = re.split(r"(?<=[.!?])\s+", text)
+    return [compact_text(part, 320) for part in parts if 40 <= len(part.strip()) <= 360]
+
+
+def sentence_score(sentence: str, tokens: list[str]) -> int:
+    lowered = sentence.lower()
+    score = sum(3 for token in tokens if token in lowered)
+    if re.search(r"\b(is|are|means|refers to|used for|because|can|should|steps?|how to)\b", lowered):
+        score += 2
+    if re.search(r"\b\d{4}\b|\b\d+(?:\.\d+)?%?\b", lowered):
+        score += 1
+    return score
 
 
 def weather(location: str) -> ResearchResult:
@@ -63,7 +101,7 @@ def weather(location: str) -> ResearchResult:
         humidity = current.get("humidity", "?")
         wind = current.get("windspeedKmph", "?")
         summary = f"{area_name}, {country}: {desc}, {temp_c} C, feels like {feels} C, humidity {humidity}%, wind {wind} km/h."
-        return ResearchResult(True, f"Weather for {area_name}", summary, [f"https://wttr.in/{encoded}"])
+        return ResearchResult(True, f"Weather for {area_name}", summary, [f"https://wttr.in/{encoded}"], confidence="high", evidence_count=1)
     except Exception as exc:
         return ResearchResult(False, "Weather unavailable", "", [], str(exc))
 
@@ -91,7 +129,7 @@ def news(topic: str = "") -> ResearchResult:
                 links.append(link)
         if not entries:
             return ResearchResult(False, title, "", [], "No news items were returned.")
-        return ResearchResult(True, title, "\n".join(entries), links)
+        return ResearchResult(True, title, "\n".join(entries), links, confidence="medium", evidence_count=len(entries))
     except Exception as exc:
         return ResearchResult(False, title, "", [], str(exc))
 
@@ -118,7 +156,7 @@ def search_web(query: str) -> ResearchResult:
             if len(entries) >= 5:
                 break
         if entries:
-            return ResearchResult(True, f"Research: {query}", "\n".join(entries), links[:5])
+            return ResearchResult(True, f"Research: {query}", "\n".join(entries), links[:5], confidence="low", evidence_count=len(entries))
     except Exception:
         pass
 
@@ -142,7 +180,7 @@ def search_web(query: str) -> ResearchResult:
             if link:
                 links.append(link)
         if entries:
-            return ResearchResult(True, f"Research: {query}", "\n".join(entries), links[:5])
+            return ResearchResult(True, f"Research: {query}", "\n".join(entries), links[:5], confidence="low", evidence_count=len(entries))
     except Exception:
         pass
 
@@ -165,9 +203,65 @@ def search_web(query: str) -> ResearchResult:
                 break
         if not entries:
             return ResearchResult(False, f"Search: {query}", "", [url], "No search results were parsed.")
-        return ResearchResult(True, f"Search: {query}", "\n".join(entries), links[:5])
+        return ResearchResult(True, f"Search: {query}", "\n".join(entries), links[:5], confidence="low", evidence_count=len(entries))
     except Exception as exc:
         return ResearchResult(False, f"Search: {query}", "", [], str(exc))
+
+
+def answer_question(query: str, *, max_pages: int = 3) -> ResearchResult:
+    base = search_web(query)
+    if not base.ok:
+        return base
+    tokens = query_tokens(query)
+    if not tokens:
+        return base
+    evidence: list[tuple[int, str, str]] = []
+    visited: set[str] = set()
+    for link in base.links[: max(1, min(max_pages, 5))]:
+        if not link.startswith(("http://", "https://")):
+            continue
+        domain = domain_from_url(link)
+        if not domain or domain in visited:
+            continue
+        visited.add(domain)
+        try:
+            page_text = plain_text_from_html(fetch_text(link, timeout=8))
+        except (HTTPError, URLError, TimeoutError, OSError, UnicodeError):
+            continue
+        for sentence in split_sentences(page_text):
+            score = sentence_score(sentence, tokens)
+            if score > 0:
+                evidence.append((score, sentence, link))
+    if not evidence:
+        return base
+    evidence.sort(key=lambda item: item[0], reverse=True)
+    selected: list[tuple[str, str]] = []
+    seen_sentences: set[str] = set()
+    for _, sentence, link in evidence:
+        key = sentence.casefold()
+        if key in seen_sentences:
+            continue
+        seen_sentences.add(key)
+        selected.append((sentence, link))
+        if len(selected) >= 4:
+            break
+    if not selected:
+        return base
+    summary_lines = [sentence for sentence, _ in selected]
+    links = []
+    for _, link in selected:
+        if link not in links:
+            links.append(link)
+    confidence = "high" if len(selected) >= 3 and len(links) >= 2 else "medium"
+    summary = " ".join(summary_lines)
+    return ResearchResult(
+        True,
+        f"Research answer: {query}",
+        compact_text(summary, 1300),
+        links[:3],
+        confidence=confidence,
+        evidence_count=len(selected),
+    )
 
 
 def normalize_duckduckgo_href(href: str) -> str:

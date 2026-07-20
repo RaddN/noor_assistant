@@ -4,13 +4,15 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from standalone_assistant.core.ai_response import AIResponseService
 from standalone_assistant.core.connectors import ToolRegistry
 from standalone_assistant.core.connections import connection_snapshot
 from standalone_assistant.core.google_productivity import GoogleProductivityService
+from standalone_assistant.core.paths import PROJECT_ROOT
 from standalone_assistant.core.storage import Storage
 from standalone_assistant.core.time_parser import parse_when
 from standalone_assistant.core.whatsapp_web import WhatsAppWebService
-from standalone_assistant.core.web_research import ResearchResult, news, search_web, weather
+from standalone_assistant.core.web_research import ResearchResult, answer_question, news, search_web, weather
 
 
 @dataclass
@@ -69,7 +71,7 @@ class AssistantBrain:
 
         if lowered.startswith("research ") or lowered.startswith("search "):
             query = text.split(" ", 1)[1].strip() if " " in text else ""
-            result = search_web(query)
+            result = answer_question(query)
             return self._from_research(result)
 
         if "tool" in lowered:
@@ -91,6 +93,10 @@ class AssistantBrain:
         if entity:
             return AssistantReply(entity)
 
+        knowledge = self.knowledge_answer(lowered)
+        if knowledge:
+            return AssistantReply(knowledge)
+
         if "connection" in lowered or "connected" in lowered or "status" in lowered:
             return AssistantReply(self.connection_status())
 
@@ -100,11 +106,7 @@ class AssistantBrain:
         if lowered.startswith("open ") or lowered.startswith("add task ") or lowered.startswith("new task ") or "test connections" in lowered:
             return AssistantReply(f"I will handle: {text}", action=text)
 
-        result = search_web(text)
-        if result.ok:
-            return AssistantReply("I did not have that in local knowledge, so I researched it.\n" + self._from_research(result).text)
-        self.storage.log("info", "Assistant Brain", f"Unmatched message and research failed: {text}")
-        return AssistantReply(f"I do not have a reliable answer yet, and research failed: {result.error}")
+        return self._fallback_answer(text)
 
     def handle_productivity_command(self, text: str, lowered: str) -> str:
         google = GoogleProductivityService(self.storage)
@@ -348,6 +350,32 @@ class AssistantBrain:
                     f"Notes: {project['notes'] or 'none'}"
                 )
         return ""
+
+    def knowledge_answer(self, lowered: str) -> str:
+        tokens = [token for token in re.findall(r"[a-z0-9]{4,}", lowered) if token not in {"what", "when", "where", "which", "about", "with", "from"}]
+        if not tokens:
+            return ""
+        rows = self.storage.fetch_all("SELECT title, category, body FROM knowledge WHERE trusted = 1 ORDER BY updated_at DESC LIMIT 100")
+        scored = []
+        for row in rows:
+            haystack = f"{row['title']} {row['category']} {row['body']}".lower()
+            score = sum(1 for token in tokens if token in haystack)
+            if score:
+                scored.append((score, row))
+        if not scored:
+            return ""
+        scored.sort(key=lambda item: item[0], reverse=True)
+        row = scored[0][1]
+        return f"{row['title']}\n{row['body'][:900]}"
+
+    def _fallback_answer(self, text: str) -> AssistantReply:
+        result = AIResponseService(self.storage, PROJECT_ROOT).answer(text, channel="assistant")
+        if result.ok and result.text:
+            prefix = "" if result.source.startswith(("research", "cache:research")) else f"({result.source}) "
+            self.storage.log("info", "Assistant Brain", f"Fallback answered with {result.source}", {"prompt_hash": "hidden"})
+            return AssistantReply(prefix + result.text)
+        self.storage.log("info", "Assistant Brain", f"Unmatched message and fallback failed: {text}", {"error": result.error})
+        return AssistantReply(f"I do not have a reliable answer yet. {result.error}".strip())
 
     def connection_status(self) -> str:
         snap = connection_snapshot(self.storage)

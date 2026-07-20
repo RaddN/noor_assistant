@@ -14,6 +14,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from standalone_assistant.core.ai_response import AIResponseService
 from standalone_assistant.core.gemini_cli import GeminiCli, GeminiResult
 from standalone_assistant.core.paths import (
     PROJECT_ROOT,
@@ -213,12 +214,12 @@ class WhatsAppWebService:
             allowed, reason = self._auto_reply_allowed(chat, auto)
             if not allowed:
                 return WhatsAppResult(False, reason)
-            gemini = self.gemini_draft(body)
-            if not gemini.ok:
-                self._record_auto_reply(chat, message_hash, "", "gemini", "Blocked")
-                self.storage.log("warning", "WhatsApp", "Unknown message left unsent because Gemini could not prepare a reply.", {"chat": chat, "message_hash": message_hash})
-                return WhatsAppResult(False, "Unknown message was not sent because Gemini could not produce a reply.", error=gemini.error)
-            reply, source = gemini.text, "gemini"
+            fallback = self.smart_reply(body)
+            if not fallback.ok:
+                self._record_auto_reply(chat, message_hash, "", "ai", "Blocked")
+                self.storage.log("warning", "WhatsApp", "Unknown message left unsent because AI fallback could not prepare a reply.", {"chat": chat, "message_hash": message_hash, "error": fallback.error})
+                return WhatsAppResult(False, "Unknown message was not sent because Noor could not prepare a reliable reply.", error=fallback.error)
+            reply, source = fallback.text, fallback.source
         else:
             allowed, reason = self._auto_reply_allowed(chat, auto, bypass_chat_cooldown=True)
             if not allowed:
@@ -274,6 +275,9 @@ class WhatsAppWebService:
 
     def gemini_draft(self, incoming_message: str) -> GeminiResult:
         return GeminiCli(self.storage.get_setting("gemini_cli", {}), PROJECT_ROOT).draft_reply(incoming_message)
+
+    def smart_reply(self, incoming_message: str):
+        return AIResponseService(self.storage, PROJECT_ROOT).answer(incoming_message, channel="whatsapp")
 
     def auto_settings(self) -> dict[str, Any]:
         defaults = {
@@ -388,12 +392,12 @@ class WhatsAppWebService:
                 self._record_auto_reply(chat_key, event_id, "", "policy", "Blocked")
                 event_path.unlink(missing_ok=True)
                 return WhatsAppResult(False, reason)
-            gemini = self.gemini_draft(body)
-            if not gemini.ok:
-                self._record_auto_reply(chat_key, event_id, "", "gemini", "Blocked")
+            fallback = self.smart_reply(body)
+            if not fallback.ok:
+                self._record_auto_reply(chat_key, event_id, "", "ai", "Blocked")
                 event_path.unlink(missing_ok=True)
-                return WhatsAppResult(False, "Unknown message was not sent because Gemini could not produce a reply.", error=gemini.error)
-            reply, source = gemini.text, "gemini"
+                return WhatsAppResult(False, "Unknown message was not sent because Noor could not prepare a reliable reply.", error=fallback.error)
+            reply, source = fallback.text, fallback.source
         else:
             allowed, reason = self._auto_reply_allowed(chat_key, auto, bypass_chat_cooldown=True)
             if not allowed:

@@ -43,12 +43,12 @@ Built now:
 - Assistant Chat page for local command capture, quick tasks, and quick notes
 - Event-driven WhatsApp Web bridge with an isolated `whatsapp-web.js` session, rule replies, and audit history
 - Reply Approvals and Urgent Escalations pages with persistent incident state
-- Settings page for approval and escalation switches
+- Settings page for approval, escalation, and AI brain switches
 - Settings voice controls for installed Windows voices, speed, volume, and listen timeout
 - Activity History page
 - Local text-to-speech and first-pass push-to-talk voice commands without Gemini or AI
 - Visible voice diagnostics showing what the assistant heard and the recognition confidence
-- Basic assistant chat for greetings, status questions, weather, news, and web research
+- Basic assistant chat for greetings, status questions, weather, news, web research, and optional AI fallback answers
 - Tool and project knowledge from the local connector/project registries
 - Google Tasks and Google Calendar productivity commands after one-time OAuth authorization
 - Scrollable pages so the assistant cockpit remains usable on smaller windows
@@ -70,13 +70,13 @@ Noor uses an isolated `whatsapp-web.js` session at `data\whatsapp-webjs-auth`; s
 
 - It receives new direct-message events instead of polling or exporting chat history.
 - It records a stable message fingerprint for duplicate protection. Incoming message text is not stored unless **Store message previews** is enabled in Settings.
-- Matching rules in `config\whatsapp_reply_rules.json` send direct replies. Unknown messages are only sent when Gemini CLI returns a valid reply.
+- Matching rules in `config\whatsapp_reply_rules.json` send direct replies. Unknown messages use Noor's shared brain pipeline and are only sent when a reliable reply is produced.
 - Groups are skipped by default. Quiet hours, per-chat cooldowns, hourly limits, chat verification immediately before sending, and audit history are applied before a reply is sent.
 - It uses an unofficial WhatsApp Web client, so WhatsApp-side changes can require a library update.
 
 ### Automatic Replies
 
-When automatic replies are enabled in **Settings**, Noor checks unread direct chats every 12 seconds. A `hello` or `hi` matches the included greeting rule and replies automatically from any direct contact. Add or change rules in `config\whatsapp_reply_rules.json`; they apply on the next check. Restart the app after changing browser selectors. Unknown messages are passed to Gemini only when its non-interactive CLI is available and enabled. If it is unavailable, the message is recorded as blocked and is not sent.
+When automatic replies are enabled in **Settings**, Noor checks unread direct chats every 12 seconds. A `hello` or `hi` matches the included greeting rule and replies automatically from any direct contact. Add or change rules in `config\whatsapp_reply_rules.json`; they apply on the next check. Restart the app after changing browser selectors. Unknown messages use the same low-cost brain as assistant chat: cached answer, lightweight research, Gemini CLI, then Codex CLI. If no reliable answer is available, the message is recorded as blocked and is not sent.
 
 Install the local browser runtime once after installing dependencies:
 
@@ -84,9 +84,16 @@ Install the local browser runtime once after installing dependencies:
 .\.venv\Scripts\python.exe -m playwright install chromium
 ```
 
-## Gemini CLI Drafts
+## AI Brain Fallbacks
 
-Gemini is optional and disabled by default. Noor detects it on Windows using `where gemini`. When you install and sign in to Gemini CLI, you can enable draft assistance in Settings. It runs only in non-interactive JSON mode with a strict timeout, no `--yolo`, minimal quoted context, and keeps every generated reply in approval mode.
+Noor's default brain is local and deterministic: rules, trusted notes, tool/project registries, and direct status checks run before any external AI. For unknown questions, Settings can enable this fallback order:
+
+1. Reuse a recent cached answer.
+2. Do lightweight web research and answer from extracted source evidence when confidence is medium or high.
+3. Use Gemini CLI with bounded context and a strict timeout.
+4. Use Codex CLI only if Gemini fails or is rate-limited.
+
+Gemini is detected on Windows using `where gemini`; Codex is detected using the local `codex` launcher. The Codex fallback is separate from editable Codex sessions and runs read-only with `gpt-5-mini`, low reasoning, ephemeral mode, and a short timeout by default. WhatsApp fallback can be limited to messages that look like questions so casual acknowledgements do not spend AI quota.
 
 ## Connected Tools
 
@@ -123,6 +130,8 @@ Codex sessions run with:
 - live output saved to `data\codex-sessions\`
 
 The app warns before allowing edits in a dirty git worktree.
+
+For answer fallback only, Noor uses Codex in a cheaper non-editing mode: read-only sandbox, `gpt-5-mini`, low reasoning, no approvals, ephemeral session, and `--output-last-message`.
 
 ## Google Tasks And Calendar
 
@@ -200,7 +209,7 @@ Supported first-pass voice commands include:
 
 ## Assistant Questions
 
-Noor uses a local deterministic brain, local trusted notes, tool/project registries, and lightweight web research. She does not connect to Gemini or another AI provider.
+Noor uses a local deterministic brain, local trusted notes, tool/project registries, and lightweight web research first. Optional Gemini and Codex fallbacks are used only after local/research answers are not reliable enough, with caching and hourly limits to control usage.
 
 The assistant can answer basic local and current questions:
 
