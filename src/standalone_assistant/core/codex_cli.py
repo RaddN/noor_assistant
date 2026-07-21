@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import tempfile
@@ -62,7 +63,8 @@ class CodexCli:
         if not executable:
             return CodexResult(False, error="Codex CLI was not found on PATH.")
 
-        model = str(self.settings.get("model") or "gpt-5-mini").strip()
+        configured_model = str(self.settings.get("model") or "gpt-5.4-mini").strip()
+        model = {"gpt-5-mini": "gpt-5.4-mini"}.get(configured_model, configured_model)
         effort = str(self.settings.get("reasoning_effort") or "low").strip()
         timeout = max(20, min(int(self.settings.get("timeout_seconds", 60)), 180))
         max_chars = max(500, min(int(self.settings.get("max_context_characters", 2200)), 6000))
@@ -85,6 +87,7 @@ class CodexCli:
         output_path = Path(tempfile.gettempdir()) / f"noor-codex-answer-{uuid.uuid4().hex}.txt"
         args = [
             "exec",
+            "--ignore-user-config",
             "-m",
             model,
             "-c",
@@ -93,24 +96,27 @@ class CodexCli:
             str(self.workspace),
             "--sandbox",
             "read-only",
-            "--ask-for-approval",
-            "never",
             "--ephemeral",
             "--output-last-message",
             str(output_path),
             "-",
         ]
         try:
-            result = subprocess.run(
-                command_for_cli(executable, args),
-                input=prompt,
-                cwd=self.workspace,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-                check=False,
-                **hidden_subprocess_kwargs(),
-            )
+            with tempfile.TemporaryDirectory(prefix="noor-codex-home-") as codex_home:
+                self._copy_codex_auth(Path(codex_home))
+                env = os.environ.copy()
+                env["CODEX_HOME"] = codex_home
+                result = subprocess.run(
+                    command_for_cli(executable, args),
+                    input=prompt,
+                    cwd=self.workspace,
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout,
+                    check=False,
+                    env=env,
+                    **hidden_subprocess_kwargs(),
+                )
         except subprocess.TimeoutExpired:
             return CodexResult(False, error="Codex CLI timed out while preparing an answer.")
         except OSError as exc:
@@ -129,3 +135,11 @@ class CodexCli:
         if not text:
             return CodexResult(False, error=combined[:500] or "Codex CLI did not return a usable answer.")
         return CodexResult(True, text=text)
+
+    @staticmethod
+    def _copy_codex_auth(target_home: Path) -> None:
+        source_home = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
+        for filename in ("auth.json", "installation_id"):
+            source = source_home / filename
+            if source.exists():
+                shutil.copy2(source, target_home / filename)

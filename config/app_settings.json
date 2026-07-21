@@ -48,7 +48,7 @@
   },
   "codex_ai": {
     "enabled": true,
-    "model": "gpt-5-mini",
+    "model": "gpt-5.4-mini",
     "reasoning_effort": "low",
     "timeout_seconds": 60,
     "max_context_characters": 2200

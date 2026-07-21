@@ -2517,7 +2517,10 @@ class SettingsPage(BasePage):
         codex_ai = self.storage.get_setting("codex_ai", {})
         self.codex_ai_enabled = QCheckBox("Allow Codex final fallback")
         self.codex_ai_enabled.setChecked(bool(codex_ai.get("enabled", True)))
-        self.codex_ai_model = QLineEdit(str(codex_ai.get("model", "gpt-5-mini")))
+        codex_model = str(codex_ai.get("model", "gpt-5.4-mini"))
+        if codex_model == "gpt-5-mini":
+            codex_model = "gpt-5.4-mini"
+        self.codex_ai_model = QLineEdit(codex_model)
         self.codex_ai_reasoning = QComboBox()
         for value in ["low", "medium", "high"]:
             self.codex_ai_reasoning.addItem(value, value)
@@ -2683,7 +2686,7 @@ class SettingsPage(BasePage):
         codex_ai.update(
             {
                 "enabled": self.codex_ai_enabled.isChecked(),
-                "model": self.codex_ai_model.text().strip() or "gpt-5-mini",
+                "model": self.codex_ai_model.text().strip() or "gpt-5.4-mini",
                 "reasoning_effort": self.codex_ai_reasoning.currentData() or "low",
                 "timeout_seconds": self.codex_ai_timeout.value(),
                 "max_context_characters": int(codex_ai.get("max_context_characters", 2200)),
@@ -2771,6 +2774,7 @@ class FloatingChatDialog(QDialog):
 class MainWindow(QMainWindow):
     whatsapp_connection_finished = Signal(object)
     whatsapp_poll_finished = Signal(object, object)
+    whatsapp_progress = Signal(str, str)
 
     def __init__(self, storage: Storage) -> None:
         super().__init__()
@@ -2793,6 +2797,7 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("Ready")
         self.whatsapp_connection_finished.connect(self.handle_whatsapp_connection_finished)
         self.whatsapp_poll_finished.connect(self.handle_whatsapp_poll_finished)
+        self.whatsapp_progress.connect(self.show_toast)
         self.connection_timer = QTimer(self)
         self.connection_timer.timeout.connect(self.ensure_whatsapp_connection)
         self.connection_timer.start(30000)
@@ -3133,7 +3138,7 @@ class MainWindow(QMainWindow):
         status = None
         result = None
         try:
-            service = WhatsAppWebService(self.storage)
+            service = WhatsAppWebService(self.storage, self.whatsapp_progress.emit)
             status = service.ensure_running()
             if status.ok:
                 result = service.process_unread_auto_replies()

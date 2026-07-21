@@ -12,7 +12,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from standalone_assistant.core.ai_response import AIResponseService
 from standalone_assistant.core.connectors import ToolRegistry
@@ -63,8 +63,13 @@ class WhatsAppRuleContext:
 class WhatsAppWebService:
     """Event-driven WhatsApp Web bridge with an isolated local authentication session."""
 
-    def __init__(self, storage: Storage) -> None:
+    def __init__(self, storage: Storage, progress_callback: Callable[[str, str], None] | None = None) -> None:
         self.storage = storage
+        self.progress_callback = progress_callback
+
+    def _progress(self, title: str, message: str) -> None:
+        if self.progress_callback:
+            self.progress_callback(title, message)
 
     def settings(self) -> dict[str, Any]:
         defaults = {
@@ -229,15 +234,18 @@ class WhatsAppWebService:
         body = str(candidate.get("text") or "").strip()
         if self.storage.fetch_one("SELECT 1 FROM whatsapp_auto_replies WHERE message_hash = ?", (message_hash,)):
             return None
+        self._progress("WhatsApp", f"New direct message from {chat}. Checking reply rules...")
         self.capture_fingerprint(chat, message_hash, body)
         rule_result = self._reply_for(body, WhatsAppRuleContext(event_type="message", chat_id=str(result.data.get("chat_id") or ""), chat_label=chat, now=now_local()))
         if not rule_result.matched:
             self._record_auto_reply(chat, message_hash, "", "no-rule", "Ignored")
             self.storage.log("info", "WhatsApp", "Unread direct message ignored because no WhatsApp rule matched.", {"chat": chat, "message_hash": message_hash})
+            self._progress("WhatsApp", "No WhatsApp rule matched; no reply sent.")
             return WhatsAppResult(True, "No WhatsApp rule matched; no reply sent.", {"chat": chat, "source": "no-rule"})
         if not rule_result.ok or not rule_result.reply:
             self._record_auto_reply(chat, message_hash, "", rule_result.source or "rule-error", "Blocked")
             self.storage.log("warning", "WhatsApp", "Matched WhatsApp rule could not produce a reply.", {"chat": chat, "message_hash": message_hash, "source": rule_result.source, "error": rule_result.error})
+            self._progress("WhatsApp", f"Matched rule failed: {rule_result.error[:160]}")
             return WhatsAppResult(False, "Matched WhatsApp rule could not produce a reply.", error=rule_result.error)
         reply, source = rule_result.reply, rule_result.source
         send_payload = {"reply": reply}
@@ -251,6 +259,7 @@ class WhatsAppWebService:
             return sent
         self._record_auto_reply(chat, message_hash, reply, source, "Sent")
         self.storage.log("warning", "WhatsApp", "Auto reply sent to unread direct chat.", {"chat": chat, "message_hash": message_hash, "source": source})
+        self._progress("WhatsApp", f"Auto reply sent using {source}.")
         return WhatsAppResult(True, f"Auto reply sent using {source}.", {"chat": chat, "source": source})
 
     def capture_incoming(self, chat: str, body: str) -> str:
@@ -592,10 +601,17 @@ class WhatsAppWebService:
 
         if action_type in {"ai", "research", "gemini", "codex"}:
             provider = str(action.get("provider") or ("auto" if action_type == "ai" else action_type))
+            label = {"auto": "Noor AI", "research": "Research", "gemini": "Gemini", "codex": "Codex"}.get(provider, provider.title())
+            self._progress(label, f"Preparing WhatsApp reply for {context.chat_label or 'direct chat'}...")
             result = AIResponseService(self.storage, PROJECT_ROOT).answer_with_provider(provider, prompt, channel="whatsapp")
+            if result.ok:
+                self._progress(label, f"AI reply ready via {result.source or provider}.")
+            else:
+                self._progress(label, f"AI reply failed: {result.error[:160]}")
             return WhatsAppRuleResult(True, result.ok, result.text, f"{source}:{result.source or provider}", result.error)
 
         if action_type in {"tool", "safe_tool"}:
+            self._progress("Tools", f"Running WhatsApp rule tool action for {context.chat_label or 'direct chat'}...")
             return self._execute_tool_rule(rule_id, action, message, match, context)
 
         if action_type in {"note", "log"}:
@@ -740,6 +756,7 @@ class WhatsAppWebService:
         if self.storage.fetch_one("SELECT 1 FROM whatsapp_auto_replies WHERE message_hash = ?", (event_id,)):
             event_path.unlink(missing_ok=True)
             return None
+        self._progress("WhatsApp", f"New {event_type} from {chat_label}. Checking reply rules...")
         self.capture_fingerprint(chat_key, event_id, body)
         context = WhatsAppRuleContext(event_type=event_type, event_subtype=event_subtype, chat_id=chat_id, chat_label=chat_label, now=now_local())
         rule_result = self._reply_for(body, context)
@@ -747,10 +764,13 @@ class WhatsAppWebService:
             self._record_auto_reply(chat_key, event_id, "", "no-rule", "Ignored")
             event_path.unlink(missing_ok=True)
             self.storage.log("info", "WhatsApp", "WhatsApp event ignored because no rule matched.", {"message_hash": event_id})
+            self._progress("WhatsApp", "No WhatsApp rule matched; no reply sent.")
             return WhatsAppResult(True, "No WhatsApp rule matched; no reply sent.", {"source": "no-rule"})
         if not rule_result.ok or not rule_result.reply:
             self._record_auto_reply(chat_key, event_id, "", rule_result.source or "rule-error", "Blocked")
             event_path.unlink(missing_ok=True)
+            self.storage.log("warning", "WhatsApp", "Matched WhatsApp event rule could not produce a reply.", {"message_hash": event_id, "source": rule_result.source, "error": rule_result.error})
+            self._progress("WhatsApp", f"Matched rule failed: {rule_result.error[:160]}")
             return WhatsAppResult(False, "Matched WhatsApp rule could not produce a reply.", error=rule_result.error)
         reply, source = rule_result.reply, rule_result.source
         sent = self._request("send-reply", {"chat_id": chat_id, "chat_label": chat_label, "reply": reply})
@@ -759,6 +779,7 @@ class WhatsAppWebService:
         self._record_auto_reply(chat_key, event_id, reply, source, "Sent")
         event_path.unlink(missing_ok=True)
         self.storage.log("warning", "WhatsApp", "Auto reply sent through whatsapp-web.js.", {"message_hash": event_id, "source": source})
+        self._progress("WhatsApp", f"Auto reply sent using {source}.")
         return WhatsAppResult(True, f"Auto reply sent using {source}.", {"source": source})
 
     @staticmethod

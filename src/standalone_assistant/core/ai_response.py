@@ -98,12 +98,37 @@ class AIResponseService:
         if provider == "gemini":
             if not bool(settings.get("gemini_enabled", True)):
                 return AIResponse(False, source=provider, error="Gemini fallback is disabled in Settings.")
-            return self._gemini(message, channel, context, settings)
+            gemini = self._gemini(message, channel, context, settings)
+            if gemini.ok:
+                return gemini
+            return self._fallback_after_provider_failure("gemini", gemini.error, message, channel, context, settings)
         if provider == "codex":
             if not bool(settings.get("codex_enabled", True)):
                 return AIResponse(False, source=provider, error="Codex fallback is disabled in Settings.")
-            return self._codex(message, channel, context, settings)
+            codex = self._codex(message, channel, context, settings)
+            if codex.ok:
+                return codex
+            return self._fallback_after_provider_failure("codex", codex.error, message, channel, context, settings)
         return AIResponse(False, source=provider, error=f"Unknown AI provider: {provider}")
+
+    def _fallback_after_provider_failure(
+        self,
+        provider: str,
+        error: str,
+        message: str,
+        channel: str,
+        context: str,
+        settings: dict[str, Any],
+    ) -> AIResponse:
+        if provider != "codex" and bool(settings.get("codex_enabled", True)):
+            codex = self._codex(message, channel, context, settings)
+            if codex.ok:
+                return AIResponse(True, codex.text, f"{provider}-failed:{codex.source}")
+        if bool(settings.get("research_enabled", True)) and self._looks_answerable(message):
+            research = self._research(message, settings)
+            if research.ok:
+                return AIResponse(True, self._format_research_answer(research, channel), f"{provider}-failed:research:{research.confidence}")
+        return AIResponse(False, source=provider, error=error or f"{provider.title()} did not return a usable answer.")
 
     def _research(self, message: str, settings: dict[str, Any]) -> ResearchResult:
         if not bool(settings.get("research_enabled", True)):
