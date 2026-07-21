@@ -149,6 +149,10 @@ Assistant identity:
 - WhatsApp call fallback check:
   - temporary unmatched incoming call event produced `No WhatsApp call rule matched. Teams alert sent.`;
   - the test asserted the AI fallback path was not called and the event file was consumed.
+- Teams fallback delivery check:
+  - live settings had Teams disabled with an old pause reason, which made the floating notice appear without sending a Teams message;
+  - Teams local-UI fallback is now enabled for the open `Chat | Ashfuq Hossain Raihan | Microsoft Teams` window;
+  - a one-time Noor Teams fallback test was sent through `ms-teams` PID `8840` and logged as `Teams alert sent`.
 
 ## Partially Done
 

@@ -16,7 +16,7 @@
   },
   "escalation": {
     "enabled": false,
-    "teams_enabled": false,
+    "teams_enabled": true,
     "find_hub_enabled": true,
     "owner_phone_enabled": false,
     "backup_phone_enabled": false,
@@ -63,7 +63,7 @@
     "write_secrets_to_logs": false
   },
   "teams_alerts": {
-    "enabled": false,
+    "enabled": true,
     "mode": "local_ui",
     "graph_chat_id": "",
     "graph_chat_id_env": "NOOR_TEAMS_CHAT_ID",

@@ -793,7 +793,7 @@ class WhatsAppWebService:
             self._progress("WhatsApp", f"AI fallback reply ready via {result.source or 'AI'}.")
             return WhatsAppRuleResult(True, True, result.text.strip()[:1200], f"unmatched:{result.source or 'ai'}")
         reason = result.handoff_reason or result.error or "Gemini/Codex did not return a usable answer."
-        self._progress("Teams", f"AI fallback needs Raihan/manager reply: {reason[:160]}", "attention")
+        self._progress("AI Fallback", f"Needs Raihan/manager reply: {reason[:160]}", "attention")
         return WhatsAppRuleResult(True, False, source=f"unmatched:{result.source or 'ai'}", error=reason)
 
     @staticmethod
@@ -1018,8 +1018,9 @@ class WhatsAppWebService:
         )
         if result.ok and not (result.data or {}).get("duplicate"):
             self._progress("Teams", "Teams fallback alert sent.")
-        elif result.error:
-            self._progress("Teams", f"Teams fallback failed: {result.error[:160]}", "error")
+        elif not result.ok:
+            details = result.error or result.message
+            self._progress("Teams", f"Teams fallback failed: {details[:160]}", "error")
         return result
 
     @staticmethod

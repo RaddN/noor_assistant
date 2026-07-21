@@ -175,7 +175,7 @@ class TeamsAlertService:
     def send_alert(self, title: str, message: str, metadata: dict[str, Any] | None = None) -> TeamsAlertResult:
         settings = self.settings()
         if not bool(settings.get("enabled")):
-            return TeamsAlertResult(False, "Teams fallback is disabled.")
+            return TeamsAlertResult(False, "Teams fallback is disabled.", error="Teams fallback is disabled in Settings.")
         mode = str(settings.get("mode") or "graph").strip().casefold()
         timeout = max(3, min(int(settings.get("timeout_seconds", 12) or 12), 30))
         if mode == "webhook":
@@ -202,7 +202,7 @@ class TeamsAlertService:
     ) -> TeamsAlertResult:
         settings = self.settings()
         if not bool(settings.get("enabled")):
-            return TeamsAlertResult(False, "Teams fallback is disabled.")
+            return TeamsAlertResult(False, "Teams fallback is disabled.", error="Teams fallback is disabled in Settings.")
         incident_id = f"WA-{message_hash[:16].upper()}"
         urgency_key = self._urgency_key(chat_label, event_type, reason)
         urgency_state = self._record_urgency_event(
