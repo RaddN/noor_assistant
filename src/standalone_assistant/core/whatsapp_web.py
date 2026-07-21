@@ -543,11 +543,30 @@ class WhatsAppWebService:
         chat_label = context.chat_label.strip().casefold()
         if needle in {chat_id, chat_label}:
             return True
-        digits = re.sub(r"\D+", "", needle)
-        chat_digits = re.sub(r"\D+", "", chat_id)
-        if digits and chat_digits and digits == chat_digits:
+        contact_numbers = WhatsAppWebService._phone_variants(needle)
+        chat_numbers = WhatsAppWebService._phone_variants(chat_id) | WhatsAppWebService._phone_variants(chat_label)
+        if contact_numbers and chat_numbers and contact_numbers.intersection(chat_numbers):
             return True
         return bool(len(needle) >= 3 and chat_label and (needle in chat_label or chat_label in needle))
+
+    @staticmethod
+    def _phone_variants(value: str) -> set[str]:
+        digits = re.sub(r"\D+", "", value)
+        if not digits:
+            return set()
+        variants = {digits}
+        if digits.startswith("00") and len(digits) > 2:
+            variants.add(digits[2:])
+        for candidate in list(variants):
+            if candidate.startswith("880") and len(candidate) > 3:
+                variants.add("0" + candidate[3:])
+            if candidate.startswith("0") and len(candidate) > 1:
+                variants.add("880" + candidate[1:])
+            if len(candidate) >= 10:
+                variants.add(candidate[-10:])
+            if len(candidate) >= 11:
+                variants.add(candidate[-11:])
+        return {item for item in variants if len(item) >= 7}
 
     def _execute_rule(
         self,

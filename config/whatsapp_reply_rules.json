@@ -282,6 +282,37 @@
     ]
   },
   {
+    "id": "mosque-prayer-call",
+    "name": "Mosque prayer call auto reply",
+    "enabled": true,
+    "trigger_logic": "all",
+    "audience": {
+      "scope": "contacts",
+      "contacts": [
+        "01566085486",
+        "01817970161"
+      ]
+    },
+    "triggers": [
+      {
+        "type": "call",
+        "call_type": "incoming"
+      },
+      {
+        "type": "time",
+        "operator": "between",
+        "start": "11:00 AM",
+        "end": "1:00 PM"
+      }
+    ],
+    "actions": [
+      {
+        "type": "reply",
+        "text": "I'm in mosque now. I will call you back later."
+      }
+    ]
+  },
+  {
     "id": "thanks",
     "name": "Thanks",
     "enabled": true,
