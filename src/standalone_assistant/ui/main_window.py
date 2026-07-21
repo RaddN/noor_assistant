@@ -97,23 +97,45 @@ def configure_table(table: QTableWidget) -> None:
     table.setSelectionBehavior(QAbstractItemView.SelectRows)
     table.setSelectionMode(QAbstractItemView.SingleSelection)
     table.setAlternatingRowColors(True)
+    table.setWordWrap(False)
+    table.setMinimumHeight(190)
     table.verticalHeader().setVisible(False)
+    table.verticalHeader().setDefaultSectionSize(34)
+    table.verticalHeader().setMinimumSectionSize(30)
+    table.horizontalHeader().setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
     table.horizontalHeader().setStretchLastSection(True)
-    table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+    table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
+
+
+def compact_text(value: Any, limit: int = 120) -> str:
+    text = "" if value is None else str(value).replace("\r", " ").replace("\n", " ")
+    text = re.sub(r"\s+", " ", text).strip()
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 3)].rstrip() + "..."
 
 
 def set_table_rows(table: QTableWidget, headers: list[str], rows: list[list[Any]]) -> None:
-    table.clear()
-    table.setColumnCount(len(headers))
-    table.setHorizontalHeaderLabels(headers)
-    table.setRowCount(len(rows))
-    for row_index, row in enumerate(rows):
-        for col_index, value in enumerate(row):
-            item = QTableWidgetItem("" if value is None else str(value))
-            item.setFlags(item.flags() ^ Qt.ItemIsEditable)
-            table.setItem(row_index, col_index, item)
-    table.resizeColumnsToContents()
-    table.horizontalHeader().setStretchLastSection(True)
+    table.setUpdatesEnabled(False)
+    try:
+        table.clear()
+        table.setColumnCount(len(headers))
+        table.setHorizontalHeaderLabels(headers)
+        table.setRowCount(len(rows))
+        for row_index, row in enumerate(rows):
+            for col_index, value in enumerate(row):
+                full_text = "" if value is None else str(value)
+                item = QTableWidgetItem(compact_text(full_text, 140))
+                item.setToolTip(full_text)
+                item.setFlags(item.flags() ^ Qt.ItemIsEditable)
+                table.setItem(row_index, col_index, item)
+        table.resizeColumnsToContents()
+        for column in range(table.columnCount()):
+            width = table.columnWidth(column)
+            table.setColumnWidth(column, min(max(width, 82), 360))
+        table.horizontalHeader().setStretchLastSection(True)
+    finally:
+        table.setUpdatesEnabled(True)
 
 
 def selected_value(table: QTableWidget, column: int = 0) -> str | None:
@@ -256,6 +278,11 @@ class BasePage(QWidget):
 
     def refresh(self) -> None:
         pass
+
+    def notify(self, title: str, message: str) -> None:
+        window = self.window()
+        if hasattr(window, "show_toast"):
+            window.show_toast(title, message)
 
 
 class DashboardPage(BasePage):
@@ -492,19 +519,28 @@ class ToolsPage(BasePage):
         tool_id = self.current_tool_id()
         if not tool_id:
             return
+        self.notify("Tools", f"Testing {tool_id}...")
         result = self.registry.test_tool(tool_id)
-        self.details.setPlainText(result.combined_output or ("OK" if result.ok else "No output."))
         self.refresh()
+        self.details.setPlainText(result.combined_output or ("OK" if result.ok else "No output."))
+        state = "OK" if result.ok else "needs attention"
+        self.notify("Tools", f"{tool_id} test {state}.")
 
     def test_all(self) -> None:
+        self.notify("Tools", "Testing all connected tools...")
         outputs = []
+        ok_count = 0
         for tool in self.registry.list_tools():
             result = self.registry.test_tool(tool["id"])
             state = "OK" if result.ok else "NEEDS ATTENTION"
+            if result.ok:
+                ok_count += 1
             outputs.append(f"[{state}] {tool['name']}\n{result.combined_output or 'No output.'}")
             QApplication.processEvents()
-        self.details.setPlainText("\n\n".join(outputs))
         self.refresh()
+        self.details.setPlainText("\n\n".join(outputs))
+        total = len(outputs)
+        self.notify("Tools", f"Checked {total} tools: {ok_count} OK, {total - ok_count} need attention.")
 
     def open_selected(self) -> None:
         tool_id = self.current_tool_id()
@@ -529,9 +565,11 @@ class ToolsPage(BasePage):
         if not ok:
             return
         index = labels.index(label)
+        self.notify("Tools", f"Running {label}...")
         result = self.registry.run_safe_command(tool_id, index)
-        self.details.setPlainText(result.combined_output or ("OK" if result.ok else "No output."))
         self.refresh()
+        self.details.setPlainText(result.combined_output or ("OK" if result.ok else "No output."))
+        self.notify("Tools", f"{label} {'finished' if result.ok else 'needs attention'}.")
 
 
 class ProjectsPage(BasePage):
@@ -752,6 +790,7 @@ class ProjectsPage(BasePage):
         self.process.write(prompt.encode("utf-8"))
         self.process.closeWriteChannel()
         self.storage.log("info", "Codex", f"Started Codex session for {project['name']}", {"session_id": session_id})
+        self.notify("Codex", f"Started session {session_id} for {project['name']}.")
 
     def read_codex_output(self) -> None:
         if not self.process:
@@ -774,6 +813,7 @@ class ProjectsPage(BasePage):
             )
             self.storage.log("info" if status == "Completed" else "warning", "Codex", f"Session {self.active_session_id} {status.lower()}")
         self.codex_output.appendPlainText(f"\nCodex session finished: {status} (exit {exit_code}).")
+        self.notify("Codex", f"Session {self.active_session_id or ''} {status.lower()} (exit {exit_code}).")
 
     def stop_codex(self) -> None:
         if not self.process or self.process.state() == QProcess.NotRunning:
@@ -783,6 +823,7 @@ class ProjectsPage(BasePage):
         if self.active_session_id:
             self.storage.execute("UPDATE codex_sessions SET status = ?, ended_at = ? WHERE id = ?", ("Stopped", utc_now(), self.active_session_id))
         self.storage.log("warning", "Codex", "Codex process stopped by user.")
+        self.notify("Codex", "Codex session stopped.")
 
     def resume_last(self) -> None:
         project = self.selected_project()
@@ -1310,7 +1351,8 @@ class WhatsAppRulesPage(BasePage):
         layout.setContentsMargins(18, 16, 18, 16)
         layout.setSpacing(10)
 
-        toolbar = QFrame()
+        self.toolbar = QFrame()
+        toolbar = self.toolbar
         toolbar.setObjectName("rulesToolbar")
         toolbar_layout = QHBoxLayout(toolbar)
         toolbar_layout.setContentsMargins(10, 8, 10, 8)
@@ -1361,6 +1403,7 @@ class WhatsAppRulesPage(BasePage):
         self.table = QTableWidget()
         self.table.setObjectName("rulesTable")
         configure_table(self.table)
+        self.table.setMinimumHeight(360)
         self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.table.setSortingEnabled(True)
         self.table.itemSelectionChanged.connect(self.update_bulk_status)
@@ -1369,8 +1412,8 @@ class WhatsAppRulesPage(BasePage):
         self.editor_panel = QFrame()
         self.editor_panel.setObjectName("ruleEditorPanel")
         editor_layout = QVBoxLayout(self.editor_panel)
-        editor_layout.setContentsMargins(12, 10, 12, 12)
-        editor_layout.setSpacing(8)
+        editor_layout.setContentsMargins(12, 8, 12, 10)
+        editor_layout.setSpacing(6)
 
         editor_header = QHBoxLayout()
         self.editor_title = QLabel("New WhatsApp Rule")
@@ -1384,7 +1427,7 @@ class WhatsAppRulesPage(BasePage):
 
         top = QGridLayout()
         top.setHorizontalSpacing(8)
-        top.setVerticalSpacing(6)
+        top.setVerticalSpacing(4)
         self.id_input = QLineEdit()
         self.id_input.setPlaceholderText("project-status")
         self.name_input = QLineEdit()
@@ -1411,55 +1454,37 @@ class WhatsAppRulesPage(BasePage):
         self.audience_scope.addItem("Everyone except selected contacts", "except_contacts")
         self.contacts_input = QPlainTextEdit()
         self.contacts_input.setPlaceholderText("One contact, phone number, or WhatsApp chat id per line")
-        self.contacts_input.setMaximumHeight(82)
+        self.contacts_input.setMaximumHeight(58)
+        self.contacts_label = QLabel("Contacts")
+        self.audience_scope.currentIndexChanged.connect(self.update_audience_fields)
         audience_layout.addWidget(QLabel("Send for"), 0, 0)
         audience_layout.addWidget(self.audience_scope, 0, 1)
-        audience_layout.addWidget(QLabel("Contacts"), 1, 0)
+        audience_layout.addWidget(self.contacts_label, 1, 0)
         audience_layout.addWidget(self.contacts_input, 1, 1)
 
         trigger_box = QGroupBox("Triggers")
         trigger_layout = QVBoxLayout(trigger_box)
-        trigger_form = QGridLayout()
-        self.trigger_type = QComboBox()
-        for label, value in [("Message", "message"), ("Call", "call"), ("Time", "time"), ("Date", "date")]:
-            self.trigger_type.addItem(label, value)
-        self.trigger_stack = QStackedWidget()
-        self._build_trigger_stack()
-        self.trigger_type.currentIndexChanged.connect(self.update_trigger_editor)
-        trigger_form.addWidget(QLabel("Type"), 0, 0)
-        trigger_form.addWidget(self.trigger_type, 0, 1)
-        trigger_form.addWidget(self.trigger_stack, 1, 0, 1, 2)
         trigger_buttons = QHBoxLayout()
-        trigger_buttons.addWidget(make_button("Add Trigger", self.add_trigger))
-        trigger_buttons.addWidget(make_button("Remove Trigger", self.remove_trigger))
+        trigger_buttons.addWidget(self._tool_button("Add Trigger", "plus.svg", self.add_trigger, "Add message, call, time, or date trigger", primary=True))
+        trigger_buttons.addWidget(self._tool_button("Remove", "trash.svg", self.remove_trigger, "Remove selected trigger"))
         trigger_buttons.addStretch()
         self.triggers_table = QTableWidget()
         configure_table(self.triggers_table)
-        self.triggers_table.setMaximumHeight(170)
-        trigger_layout.addLayout(trigger_form)
+        self.triggers_table.setMinimumHeight(116)
+        self.triggers_table.setMaximumHeight(140)
         trigger_layout.addLayout(trigger_buttons)
         trigger_layout.addWidget(self.triggers_table)
 
         action_box = QGroupBox("Actions")
         action_layout = QVBoxLayout(action_box)
-        action_form = QGridLayout()
-        self.action_type = QComboBox()
-        for label, value in [("Direct reply", "reply"), ("Noor brain", "assistant"), ("AI provider", "ai"), ("Safe tool command", "tool"), ("Log note", "log")]:
-            self.action_type.addItem(label, value)
-        self.action_stack = QStackedWidget()
-        self._build_action_stack()
-        self.action_type.currentIndexChanged.connect(self.update_action_editor)
-        action_form.addWidget(QLabel("Type"), 0, 0)
-        action_form.addWidget(self.action_type, 0, 1)
-        action_form.addWidget(self.action_stack, 1, 0, 1, 2)
         action_buttons = QHBoxLayout()
-        action_buttons.addWidget(make_button("Add Action", self.add_action))
-        action_buttons.addWidget(make_button("Remove Action", self.remove_action))
+        action_buttons.addWidget(self._tool_button("Add Action", "plus.svg", self.add_action, "Add reply, AI, tool, or log action", primary=True))
+        action_buttons.addWidget(self._tool_button("Remove", "trash.svg", self.remove_action, "Remove selected action"))
         action_buttons.addStretch()
         self.actions_table = QTableWidget()
         configure_table(self.actions_table)
-        self.actions_table.setMaximumHeight(170)
-        action_layout.addLayout(action_form)
+        self.actions_table.setMinimumHeight(116)
+        self.actions_table.setMaximumHeight(140)
         action_layout.addLayout(action_buttons)
         action_layout.addWidget(self.actions_table)
 
@@ -1494,6 +1519,39 @@ class WhatsAppRulesPage(BasePage):
             button.clicked.connect(callback)
         return button
 
+    def set_editor_mode(self, editing: bool) -> None:
+        self.toolbar.setVisible(not editing)
+        self.summary_label.setVisible(not editing)
+        self.table.setVisible(not editing)
+        self.editor_panel.setVisible(editing)
+        if editing:
+            self.output.hide()
+
+    def update_audience_fields(self) -> None:
+        show_contacts = str(self.audience_scope.currentData() or "everyone") != "everyone"
+        self.contacts_label.setVisible(show_contacts)
+        self.contacts_input.setVisible(show_contacts)
+
+    def apply_rules_table_layout(self) -> None:
+        header = self.table.horizontalHeader()
+        header.setStretchLastSection(False)
+        for column in range(self.table.columnCount()):
+            header.setSectionResizeMode(column, QHeaderView.Interactive)
+        widths = {0: 150, 1: 180, 2: 72, 3: 150, 5: 260}
+        for column, width in widths.items():
+            if column < self.table.columnCount():
+                self.table.setColumnWidth(column, width)
+        if self.table.columnCount() > 4:
+            header.setSectionResizeMode(4, QHeaderView.Stretch)
+
+    def apply_builder_table_layout(self, table: QTableWidget) -> None:
+        header = table.horizontalHeader()
+        header.setStretchLastSection(False)
+        if table.columnCount() > 0:
+            header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        if table.columnCount() > 1:
+            header.setSectionResizeMode(1, QHeaderView.Stretch)
+
     def load_rules(self) -> list[dict[str, Any]]:
         return [normalize_rule(rule) for rule in load_whatsapp_rules()]
 
@@ -1504,18 +1562,31 @@ class WhatsAppRulesPage(BasePage):
         rules = self.filtered_rules()
         self.visible_rule_ids = [str(rule.get("id") or "") for rule in rules]
         self.table.setSortingEnabled(False)
-        rows = [
-            [
-                rule["id"],
-                rule.get("name") or rule["id"],
-                "On" if rule.get("enabled", True) else "Off",
-                whatsapp_audience_summary(rule),
-                whatsapp_trigger_summary(rule),
-                whatsapp_action_summary(rule),
-            ]
-            for rule in rules
-        ]
+        rows = []
+        full_summaries: list[tuple[str, str]] = []
+        for rule in rules:
+            trigger_summary = whatsapp_trigger_summary(rule)
+            action_summary = whatsapp_action_summary(rule)
+            full_summaries.append((trigger_summary, action_summary))
+            rows.append(
+                [
+                    rule["id"],
+                    rule.get("name") or rule["id"],
+                    "On" if rule.get("enabled", True) else "Off",
+                    whatsapp_audience_summary(rule),
+                    compact_text(trigger_summary, 92),
+                    compact_text(action_summary, 82),
+                ]
+            )
         set_table_rows(self.table, ["ID", "Name", "State", "Audience", "Triggers", "Actions"], rows)
+        for row_index, (trigger_summary, action_summary) in enumerate(full_summaries):
+            trigger_item = self.table.item(row_index, 4)
+            action_item = self.table.item(row_index, 5)
+            if trigger_item:
+                trigger_item.setToolTip(trigger_summary)
+            if action_item:
+                action_item.setToolTip(action_summary)
+        self.apply_rules_table_layout()
         self.table.setSortingEnabled(True)
         all_rules = self.load_rules()
         enabled = sum(1 for rule in all_rules if rule.get("enabled", True))
@@ -1594,7 +1665,7 @@ class WhatsAppRulesPage(BasePage):
     def show_new_rule_editor(self) -> None:
         self.reset_rule_editor()
         self.editor_title.setText("New WhatsApp Rule")
-        self.editor_panel.show()
+        self.set_editor_mode(True)
         self.id_input.setFocus()
 
     def edit_selected_rule(self) -> None:
@@ -1614,7 +1685,7 @@ class WhatsAppRulesPage(BasePage):
             return
         self.editor_rule_id = rule_id
         self.editor_title.setText(f"Edit Rule: {rule_id}")
-        self.editor_panel.show()
+        self.set_editor_mode(True)
         self.populate_editor(rule)
 
     def populate_editor(self, rule: dict[str, Any]) -> None:
@@ -1630,6 +1701,7 @@ class WhatsAppRulesPage(BasePage):
                 self.audience_scope.setCurrentIndex(index)
                 break
         self.contacts_input.setPlainText(contacts_to_text(audience.get("contacts", [])))
+        self.update_audience_fields()
         self.current_triggers = [dict(trigger) for trigger in rule.get("triggers", []) if isinstance(trigger, dict)]
         self.current_actions = [dict(action) for action in rule.get("actions", []) if isinstance(action, dict)]
         self.refresh_builder_tables()
@@ -1654,11 +1726,11 @@ class WhatsAppRulesPage(BasePage):
         duplicate["name"] = f"{source.get('name') or rule_ids[0]} Copy"
         self.editor_rule_id = ""
         self.editor_title.setText(f"Duplicate Rule: {rule_ids[0]}")
-        self.editor_panel.show()
+        self.set_editor_mode(True)
         self.populate_editor(duplicate)
 
     def close_editor(self) -> None:
-        self.editor_panel.hide()
+        self.set_editor_mode(False)
         self.output.hide()
 
     def reset_rule_editor(self) -> None:
@@ -1672,202 +1744,182 @@ class WhatsAppRulesPage(BasePage):
         self.trigger_logic.setCurrentIndex(0)
         self.audience_scope.setCurrentIndex(0)
         self.contacts_input.clear()
+        self.update_audience_fields()
         self.current_triggers = []
         self.current_actions = []
         self.refresh_builder_tables()
 
-    def _build_trigger_stack(self) -> None:
+    def add_trigger(self) -> None:
+        self.open_trigger_dialog()
+
+    def open_trigger_dialog(self) -> None:
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Add Trigger")
+        dialog.setObjectName("ruleBuilderDialog")
+        dialog.setMinimumWidth(560)
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(14, 14, 14, 14)
+        layout.setSpacing(8)
+
+        type_combo = QComboBox()
+        for label, value in [("Message", "message"), ("Call", "call"), ("Time", "time"), ("Date", "date")]:
+            type_combo.addItem(label, value)
+        layout.addWidget(QLabel("Trigger"))
+        layout.addWidget(type_combo)
+
+        stack = QStackedWidget()
+
         message_page = QWidget()
         message_layout = QGridLayout(message_page)
-        self.message_match = QComboBox()
+        message_layout.setContentsMargins(0, 0, 0, 0)
+        message_match = QComboBox()
         for label, value in [("Contains", "contains"), ("Regex", "regex"), ("Equals", "equals"), ("Starts with", "starts_with"), ("Ends with", "ends_with"), ("Any message", "any")]:
-            self.message_match.addItem(label, value)
-        self.message_value = QLineEdit()
-        self.message_value.setPlaceholderText(r"Example: project status or ^\s*hello\b")
+            message_match.addItem(label, value)
+        message_value_label = QLabel("Text")
+        message_value = QLineEdit()
+        message_value.setPlaceholderText(r"project status or ^\s*hello\b")
         message_layout.addWidget(QLabel("Match"), 0, 0)
-        message_layout.addWidget(self.message_match, 0, 1)
-        message_layout.addWidget(QLabel("Text"), 1, 0)
-        message_layout.addWidget(self.message_value, 1, 1)
+        message_layout.addWidget(message_match, 0, 1)
+        message_layout.addWidget(message_value_label, 1, 0)
+        message_layout.addWidget(message_value, 1, 1)
+
+        def sync_message_fields() -> None:
+            visible = str(message_match.currentData() or "contains") != "any"
+            message_value_label.setVisible(visible)
+            message_value.setVisible(visible)
+
+        message_match.currentIndexChanged.connect(sync_message_fields)
+        sync_message_fields()
 
         call_page = QWidget()
         call_layout = QGridLayout(call_page)
-        self.call_type = QComboBox()
-        self.call_type.addItem("Any direct call", "any")
-        self.call_type.addItem("Incoming call", "incoming")
-        call_layout.addWidget(QLabel("Call trigger"), 0, 0)
-        call_layout.addWidget(self.call_type, 0, 1)
+        call_layout.setContentsMargins(0, 0, 0, 0)
+        call_type = QComboBox()
+        call_type.addItem("Any direct call", "any")
+        call_type.addItem("Incoming call", "incoming")
+        call_layout.addWidget(QLabel("Call"), 0, 0)
+        call_layout.addWidget(call_type, 0, 1)
 
         time_page = QWidget()
         time_layout = QGridLayout(time_page)
-        self.time_operator = QComboBox()
+        time_layout.setContentsMargins(0, 0, 0, 0)
+        time_operator = QComboBox()
         for label, value in [("At", "at"), ("After", "after"), ("Before", "before"), ("Between", "between")]:
-            self.time_operator.addItem(label, value)
-        self.time_value = QTimeEdit()
-        self.time_value.setDisplayFormat("h:mm AP")
-        self.time_value.setTime(QTime.currentTime())
-        self.time_end = QTimeEdit()
-        self.time_end.setDisplayFormat("h:mm AP")
-        self.time_end.setTime(QTime.currentTime().addSecs(3600))
-        self.time_days = QLineEdit()
-        self.time_days.setPlaceholderText("Optional: Mon Tue Wed")
-        self.time_operator.currentIndexChanged.connect(self.update_time_operator)
+            time_operator.addItem(label, value)
+        time_value = QTimeEdit()
+        time_value.setDisplayFormat("h:mm AP")
+        time_value.setTime(QTime.currentTime())
+        time_end_label = QLabel("End")
+        time_end = QTimeEdit()
+        time_end.setDisplayFormat("h:mm AP")
+        time_end.setTime(QTime.currentTime().addSecs(3600))
+        time_days = QLineEdit()
+        time_days.setPlaceholderText("Optional: Mon Tue Wed")
         time_layout.addWidget(QLabel("When"), 0, 0)
-        time_layout.addWidget(self.time_operator, 0, 1)
+        time_layout.addWidget(time_operator, 0, 1)
         time_layout.addWidget(QLabel("Time"), 1, 0)
-        time_layout.addWidget(self.time_value, 1, 1)
-        time_layout.addWidget(QLabel("End"), 1, 2)
-        time_layout.addWidget(self.time_end, 1, 3)
+        time_layout.addWidget(time_value, 1, 1)
+        time_layout.addWidget(time_end_label, 1, 2)
+        time_layout.addWidget(time_end, 1, 3)
         time_layout.addWidget(QLabel("Days"), 2, 0)
-        time_layout.addWidget(self.time_days, 2, 1, 1, 3)
+        time_layout.addWidget(time_days, 2, 1, 1, 3)
+
+        def sync_time_fields() -> None:
+            visible = str(time_operator.currentData() or "at") == "between"
+            time_end_label.setVisible(visible)
+            time_end.setVisible(visible)
+
+        time_operator.currentIndexChanged.connect(sync_time_fields)
+        sync_time_fields()
 
         date_page = QWidget()
         date_layout = QGridLayout(date_page)
-        self.date_operator = QComboBox()
+        date_layout.setContentsMargins(0, 0, 0, 0)
+        date_operator = QComboBox()
         for label, value in [("On", "on"), ("After", "after"), ("Before", "before"), ("Between", "between")]:
-            self.date_operator.addItem(label, value)
-        self.date_value = QDateEdit()
-        self.date_value.setDisplayFormat("yyyy-MM-dd")
-        self.date_value.setCalendarPopup(True)
-        self.date_value.setDate(QDate.currentDate())
-        self.date_end = QDateEdit()
-        self.date_end.setDisplayFormat("yyyy-MM-dd")
-        self.date_end.setCalendarPopup(True)
-        self.date_end.setDate(QDate.currentDate())
-        self.date_operator.currentIndexChanged.connect(self.update_date_operator)
+            date_operator.addItem(label, value)
+        date_value = QDateEdit()
+        date_value.setDisplayFormat("yyyy-MM-dd")
+        date_value.setCalendarPopup(True)
+        date_value.setDate(QDate.currentDate())
+        date_end_label = QLabel("End")
+        date_end = QDateEdit()
+        date_end.setDisplayFormat("yyyy-MM-dd")
+        date_end.setCalendarPopup(True)
+        date_end.setDate(QDate.currentDate())
         date_layout.addWidget(QLabel("When"), 0, 0)
-        date_layout.addWidget(self.date_operator, 0, 1)
+        date_layout.addWidget(date_operator, 0, 1)
         date_layout.addWidget(QLabel("Date"), 1, 0)
-        date_layout.addWidget(self.date_value, 1, 1)
-        date_layout.addWidget(QLabel("End"), 1, 2)
-        date_layout.addWidget(self.date_end, 1, 3)
+        date_layout.addWidget(date_value, 1, 1)
+        date_layout.addWidget(date_end_label, 1, 2)
+        date_layout.addWidget(date_end, 1, 3)
 
-        self.trigger_stack.addWidget(message_page)
-        self.trigger_stack.addWidget(call_page)
-        self.trigger_stack.addWidget(time_page)
-        self.trigger_stack.addWidget(date_page)
-        self.update_time_operator()
-        self.update_date_operator()
+        def sync_date_fields() -> None:
+            visible = str(date_operator.currentData() or "on") == "between"
+            date_end_label.setVisible(visible)
+            date_end.setVisible(visible)
 
-    def _build_action_stack(self) -> None:
-        reply_page = QWidget()
-        reply_layout = QVBoxLayout(reply_page)
-        self.reply_text = QPlainTextEdit()
-        self.reply_text.setPlaceholderText("WhatsApp reply text. You can use {message}, {chat}, {time}, and regex groups.")
-        self.reply_text.setMaximumHeight(92)
-        reply_layout.addWidget(self.reply_text)
+        date_operator.currentIndexChanged.connect(sync_date_fields)
+        sync_date_fields()
 
-        assistant_page = QWidget()
-        assistant_layout = QVBoxLayout(assistant_page)
-        self.assistant_prompt = QPlainTextEdit()
-        self.assistant_prompt.setPlaceholderText("Example: project status")
-        self.assistant_prompt.setMaximumHeight(92)
-        assistant_layout.addWidget(self.assistant_prompt)
+        stack.addWidget(message_page)
+        stack.addWidget(call_page)
+        stack.addWidget(time_page)
+        stack.addWidget(date_page)
+        type_combo.currentIndexChanged.connect(stack.setCurrentIndex)
+        layout.addWidget(stack)
 
-        ai_page = QWidget()
-        ai_layout = QGridLayout(ai_page)
-        self.ai_provider = QComboBox()
-        for label, value in [("Auto brain", "auto"), ("Research", "research"), ("Gemini", "gemini"), ("Codex", "codex")]:
-            self.ai_provider.addItem(label, value)
-        self.ai_prompt = QPlainTextEdit()
-        self.ai_prompt.setPlaceholderText("Prompt for AI. Use {message} for the incoming WhatsApp text.")
-        self.ai_prompt.setMaximumHeight(92)
-        ai_layout.addWidget(QLabel("Provider"), 0, 0)
-        ai_layout.addWidget(self.ai_provider, 0, 1)
-        ai_layout.addWidget(QLabel("Prompt"), 1, 0)
-        ai_layout.addWidget(self.ai_prompt, 1, 1)
+        buttons = QHBoxLayout()
+        buttons.addStretch()
+        save_button = self._tool_button("Add", "check.svg", None, "Add trigger", primary=True)
+        cancel_button = self._tool_button("Cancel", "close.svg", dialog.reject, "Cancel")
+        buttons.addWidget(save_button)
+        buttons.addWidget(cancel_button)
+        layout.addLayout(buttons)
 
-        tool_page = QWidget()
-        tool_layout = QGridLayout(tool_page)
-        self.tool_combo = QComboBox()
-        tools = ToolRegistry(self.storage).list_tools()
-        if tools:
-            for tool in tools:
-                self.tool_combo.addItem(str(tool.get("name") or tool["id"]), tool["id"])
-        else:
-            self.tool_combo.addItem("No safe tools configured", "")
-        self.tool_command_index = QSpinBox()
-        self.tool_command_index.setRange(0, 20)
-        self.tool_summarize = QComboBox()
-        self.tool_summarize.addItem("No summary", "")
-        self.tool_summarize.addItem("Auto brain summary", "auto")
-        self.tool_summarize.addItem("Gemini summary", "gemini")
-        self.tool_summarize.addItem("Codex summary", "codex")
-        self.tool_summary_prompt = QPlainTextEdit()
-        self.tool_summary_prompt.setPlaceholderText("Summarize this tool result for a concise WhatsApp reply.")
-        self.tool_summary_prompt.setMaximumHeight(76)
-        tool_layout.addWidget(QLabel("Tool"), 0, 0)
-        tool_layout.addWidget(self.tool_combo, 0, 1)
-        tool_layout.addWidget(QLabel("Command index"), 1, 0)
-        tool_layout.addWidget(self.tool_command_index, 1, 1)
-        tool_layout.addWidget(QLabel("Summarize"), 2, 0)
-        tool_layout.addWidget(self.tool_summarize, 2, 1)
-        tool_layout.addWidget(QLabel("Summary prompt"), 3, 0)
-        tool_layout.addWidget(self.tool_summary_prompt, 3, 1)
-
-        log_page = QWidget()
-        log_layout = QVBoxLayout(log_page)
-        self.log_text = QPlainTextEdit()
-        self.log_text.setPlaceholderText("Activity log note")
-        self.log_text.setMaximumHeight(82)
-        log_layout.addWidget(self.log_text)
-
-        self.action_stack.addWidget(reply_page)
-        self.action_stack.addWidget(assistant_page)
-        self.action_stack.addWidget(ai_page)
-        self.action_stack.addWidget(tool_page)
-        self.action_stack.addWidget(log_page)
-
-    def update_trigger_editor(self) -> None:
-        self.trigger_stack.setCurrentIndex(self.trigger_type.currentIndex())
-
-    def update_action_editor(self) -> None:
-        self.action_stack.setCurrentIndex(self.action_type.currentIndex())
-
-    def update_time_operator(self) -> None:
-        self.time_end.setEnabled(self.time_operator.currentData() == "between")
-
-    def update_date_operator(self) -> None:
-        self.date_end.setEnabled(self.date_operator.currentData() == "between")
-
-    def add_trigger(self) -> None:
-        trigger_type = str(self.trigger_type.currentData() or "message")
-        trigger: dict[str, Any]
-        if trigger_type == "message":
-            match_type = str(self.message_match.currentData() or "contains")
-            value = self.message_value.text().strip()
-            if match_type != "any" and not value:
-                QMessageBox.information(self, "WhatsApp Rule", "Message trigger text is required.")
-                return
-            if match_type == "regex":
-                try:
-                    re.compile(value)
-                except re.error as exc:
-                    QMessageBox.warning(self, "WhatsApp Rule", f"Regex trigger is not valid: {exc}")
+        def accept_trigger() -> None:
+            trigger_type = str(type_combo.currentData() or "message")
+            trigger: dict[str, Any]
+            if trigger_type == "message":
+                match_type = str(message_match.currentData() or "contains")
+                value = message_value.text().strip()
+                if match_type != "any" and not value:
+                    QMessageBox.information(dialog, "WhatsApp Rule", "Message trigger text is required.")
                     return
-            trigger = {"type": "message", "match": match_type, "value": value}
-        elif trigger_type == "call":
-            trigger = {"type": "call", "call_type": str(self.call_type.currentData() or "any")}
-        elif trigger_type == "time":
-            operator = str(self.time_operator.currentData() or "at")
-            trigger = {"type": "time", "operator": operator}
-            if operator == "between":
-                trigger["start"] = self.time_value.time().toString("h:mm AP")
-                trigger["end"] = self.time_end.time().toString("h:mm AP")
+                if match_type == "regex":
+                    try:
+                        re.compile(value)
+                    except re.error as exc:
+                        QMessageBox.warning(dialog, "WhatsApp Rule", f"Regex trigger is not valid: {exc}")
+                        return
+                trigger = {"type": "message", "match": match_type, "value": value}
+            elif trigger_type == "call":
+                trigger = {"type": "call", "call_type": str(call_type.currentData() or "any")}
+            elif trigger_type == "time":
+                operator = str(time_operator.currentData() or "at")
+                trigger = {"type": "time", "operator": operator}
+                if operator == "between":
+                    trigger["start"] = time_value.time().toString("h:mm AP")
+                    trigger["end"] = time_end.time().toString("h:mm AP")
+                else:
+                    trigger["time"] = time_value.time().toString("h:mm AP")
+                days = [item.strip() for item in re.split(r"[,;\s]+", time_days.text()) if item.strip()]
+                if days:
+                    trigger["days"] = days
             else:
-                trigger["time"] = self.time_value.time().toString("h:mm AP")
-            days = [item.strip() for item in re.split(r"[,;\s]+", self.time_days.text()) if item.strip()]
-            if days:
-                trigger["days"] = days
-        else:
-            operator = str(self.date_operator.currentData() or "on")
-            trigger = {"type": "date", "operator": operator}
-            if operator == "between":
-                trigger["start"] = self.date_value.date().toString("yyyy-MM-dd")
-                trigger["end"] = self.date_end.date().toString("yyyy-MM-dd")
-            else:
-                trigger["date"] = self.date_value.date().toString("yyyy-MM-dd")
-        self.current_triggers.append(trigger)
-        self.refresh_builder_tables()
+                operator = str(date_operator.currentData() or "on")
+                trigger = {"type": "date", "operator": operator}
+                if operator == "between":
+                    trigger["start"] = date_value.date().toString("yyyy-MM-dd")
+                    trigger["end"] = date_end.date().toString("yyyy-MM-dd")
+                else:
+                    trigger["date"] = date_value.date().toString("yyyy-MM-dd")
+            self.current_triggers.append(trigger)
+            self.refresh_builder_tables()
+            dialog.accept()
+
+        save_button.clicked.connect(accept_trigger)
+        dialog.exec()
 
     def remove_trigger(self) -> None:
         row = self.triggers_table.currentRow()
@@ -1876,34 +1928,150 @@ class WhatsAppRulesPage(BasePage):
             self.refresh_builder_tables()
 
     def add_action(self) -> None:
-        action_type = str(self.action_type.currentData() or "reply")
-        action: dict[str, Any]
-        if action_type == "reply":
-            text = self.reply_text.toPlainText().strip()
-            if not text:
-                QMessageBox.information(self, "WhatsApp Rule", "Reply text is required.")
-                return
-            action = {"type": "reply", "text": text}
-        elif action_type == "assistant":
-            prompt = self.assistant_prompt.toPlainText().strip() or "{message}"
-            action = {"type": "assistant", "prompt": prompt}
-        elif action_type == "ai":
-            prompt = self.ai_prompt.toPlainText().strip() or "{message}"
-            action = {"type": "ai", "provider": str(self.ai_provider.currentData() or "auto"), "prompt": prompt}
-        elif action_type == "tool":
-            tool_id = str(self.tool_combo.currentData() or "")
-            if not tool_id:
-                QMessageBox.information(self, "WhatsApp Rule", "Select a safe tool first.")
-                return
-            action = {"type": "tool", "tool_id": tool_id, "command_index": self.tool_command_index.value()}
-            summarize_with = str(self.tool_summarize.currentData() or "")
-            if summarize_with:
-                action["summarize_with"] = summarize_with
-                action["summary_prompt"] = self.tool_summary_prompt.toPlainText().strip() or "Summarize this tool result for a concise WhatsApp reply."
+        self.open_action_dialog()
+
+    def open_action_dialog(self) -> None:
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Add Action")
+        dialog.setObjectName("ruleBuilderDialog")
+        dialog.setMinimumWidth(600)
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(14, 14, 14, 14)
+        layout.setSpacing(8)
+
+        type_combo = QComboBox()
+        for label, value in [("Direct reply", "reply"), ("Noor brain", "assistant"), ("AI provider", "ai"), ("Safe tool command", "tool"), ("Log note", "log")]:
+            type_combo.addItem(label, value)
+        layout.addWidget(QLabel("Action"))
+        layout.addWidget(type_combo)
+
+        stack = QStackedWidget()
+
+        reply_page = QWidget()
+        reply_layout = QVBoxLayout(reply_page)
+        reply_layout.setContentsMargins(0, 0, 0, 0)
+        reply_text = QPlainTextEdit()
+        reply_text.setPlaceholderText("WhatsApp reply text. You can use {message}, {chat}, {time}, and regex groups.")
+        reply_text.setMaximumHeight(82)
+        reply_layout.addWidget(reply_text)
+
+        assistant_page = QWidget()
+        assistant_layout = QVBoxLayout(assistant_page)
+        assistant_layout.setContentsMargins(0, 0, 0, 0)
+        assistant_prompt = QPlainTextEdit()
+        assistant_prompt.setPlaceholderText("Prompt for Noor brain. Use {message} for incoming text.")
+        assistant_prompt.setMaximumHeight(82)
+        assistant_layout.addWidget(assistant_prompt)
+
+        ai_page = QWidget()
+        ai_layout = QGridLayout(ai_page)
+        ai_layout.setContentsMargins(0, 0, 0, 0)
+        ai_provider = QComboBox()
+        for label, value in [("Auto brain", "auto"), ("Research", "research"), ("Gemini", "gemini"), ("Codex", "codex")]:
+            ai_provider.addItem(label, value)
+        ai_prompt = QPlainTextEdit()
+        ai_prompt.setPlaceholderText("Prompt for AI. Use {message} for the incoming WhatsApp text.")
+        ai_prompt.setMaximumHeight(82)
+        ai_layout.addWidget(QLabel("Provider"), 0, 0)
+        ai_layout.addWidget(ai_provider, 0, 1)
+        ai_layout.addWidget(QLabel("Prompt"), 1, 0)
+        ai_layout.addWidget(ai_prompt, 1, 1)
+
+        tool_page = QWidget()
+        tool_layout = QGridLayout(tool_page)
+        tool_layout.setContentsMargins(0, 0, 0, 0)
+        tool_combo = QComboBox()
+        tools = ToolRegistry(self.storage).list_tools()
+        if tools:
+            for tool in tools:
+                tool_combo.addItem(str(tool.get("name") or tool["id"]), tool["id"])
         else:
-            action = {"type": "log", "prompt": self.log_text.toPlainText().strip() or "WhatsApp rule matched."}
-        self.current_actions.append(action)
-        self.refresh_builder_tables()
+            tool_combo.addItem("No safe tools configured", "")
+        tool_command_index = QSpinBox()
+        tool_command_index.setRange(0, 20)
+        tool_summarize = QComboBox()
+        tool_summarize.addItem("No summary", "")
+        tool_summarize.addItem("Auto brain summary", "auto")
+        tool_summarize.addItem("Gemini summary", "gemini")
+        tool_summarize.addItem("Codex summary", "codex")
+        tool_summary_label = QLabel("Summary prompt")
+        tool_summary_prompt = QPlainTextEdit()
+        tool_summary_prompt.setPlaceholderText("Summarize this tool result for a concise WhatsApp reply.")
+        tool_summary_prompt.setMaximumHeight(72)
+        tool_layout.addWidget(QLabel("Tool"), 0, 0)
+        tool_layout.addWidget(tool_combo, 0, 1)
+        tool_layout.addWidget(QLabel("Command index"), 1, 0)
+        tool_layout.addWidget(tool_command_index, 1, 1)
+        tool_layout.addWidget(QLabel("Summarize"), 2, 0)
+        tool_layout.addWidget(tool_summarize, 2, 1)
+        tool_layout.addWidget(tool_summary_label, 3, 0)
+        tool_layout.addWidget(tool_summary_prompt, 3, 1)
+
+        def sync_tool_summary() -> None:
+            visible = bool(tool_summarize.currentData())
+            tool_summary_label.setVisible(visible)
+            tool_summary_prompt.setVisible(visible)
+
+        tool_summarize.currentIndexChanged.connect(sync_tool_summary)
+        sync_tool_summary()
+
+        log_page = QWidget()
+        log_layout = QVBoxLayout(log_page)
+        log_layout.setContentsMargins(0, 0, 0, 0)
+        log_text = QPlainTextEdit()
+        log_text.setPlaceholderText("Activity log note")
+        log_text.setMaximumHeight(72)
+        log_layout.addWidget(log_text)
+
+        stack.addWidget(reply_page)
+        stack.addWidget(assistant_page)
+        stack.addWidget(ai_page)
+        stack.addWidget(tool_page)
+        stack.addWidget(log_page)
+        type_combo.currentIndexChanged.connect(stack.setCurrentIndex)
+        layout.addWidget(stack)
+
+        buttons = QHBoxLayout()
+        buttons.addStretch()
+        save_button = self._tool_button("Add", "check.svg", None, "Add action", primary=True)
+        cancel_button = self._tool_button("Cancel", "close.svg", dialog.reject, "Cancel")
+        buttons.addWidget(save_button)
+        buttons.addWidget(cancel_button)
+        layout.addLayout(buttons)
+
+        def accept_action() -> None:
+            action_type = str(type_combo.currentData() or "reply")
+            action: dict[str, Any]
+            if action_type == "reply":
+                text = reply_text.toPlainText().strip()
+                if not text:
+                    QMessageBox.information(dialog, "WhatsApp Rule", "Reply text is required.")
+                    return
+                action = {"type": "reply", "text": text}
+            elif action_type == "assistant":
+                prompt = assistant_prompt.toPlainText().strip() or "{message}"
+                action = {"type": "assistant", "prompt": prompt}
+            elif action_type == "ai":
+                prompt = ai_prompt.toPlainText().strip() or "{message}"
+                action = {"type": "ai", "provider": str(ai_provider.currentData() or "auto"), "prompt": prompt}
+            elif action_type == "tool":
+                tool_id = str(tool_combo.currentData() or "")
+                if not tool_id:
+                    QMessageBox.information(dialog, "WhatsApp Rule", "Select a safe tool first.")
+                    return
+                action = {"type": "tool", "tool_id": tool_id, "command_index": tool_command_index.value()}
+                summarize_with = str(tool_summarize.currentData() or "")
+                if summarize_with:
+                    action["summarize_with"] = summarize_with
+                    action["summary_prompt"] = tool_summary_prompt.toPlainText().strip() or "Summarize this tool result for a concise WhatsApp reply."
+            else:
+                action = {"type": "log", "prompt": log_text.toPlainText().strip() or "WhatsApp rule matched."}
+            self.current_actions.append(action)
+            self.refresh_builder_tables()
+            dialog.accept()
+
+        save_button.clicked.connect(accept_action)
+        dialog.exec()
 
     def remove_action(self) -> None:
         row = self.actions_table.currentRow()
@@ -1916,10 +2084,12 @@ class WhatsAppRulesPage(BasePage):
         for trigger in self.current_triggers:
             trigger_rows.append([self.trigger_type_label(trigger), self.trigger_detail(trigger)])
         set_table_rows(self.triggers_table, ["Type", "Condition"], trigger_rows)
+        self.apply_builder_table_layout(self.triggers_table)
         action_rows = []
         for action in self.current_actions:
             action_rows.append([whatsapp_action_summary({"actions": [action]}), self.action_detail(action)])
         set_table_rows(self.actions_table, ["Action", "Details"], action_rows)
+        self.apply_builder_table_layout(self.actions_table)
 
     @staticmethod
     def trigger_type_label(trigger: dict[str, Any]) -> str:
@@ -2027,7 +2197,7 @@ class WhatsAppRulesPage(BasePage):
         self.storage.log("info", "WhatsApp Rules", f"Saved WhatsApp rule: {rule_id}")
         self.editor_rule_id = rule_id
         self.refresh()
-        self.editor_panel.hide()
+        self.set_editor_mode(False)
         self.output.setPlainText(f"Saved rule: {rule_id}")
         self.output.show()
 
@@ -2240,6 +2410,24 @@ class SettingsPage(BasePage):
             self.approval_checks[key] = check
             approvals_layout.addWidget(check, index // 2, index % 2)
 
+        ui_box = QGroupBox("Interface")
+        ui_layout = QFormLayout(ui_box)
+        ui_settings = self.storage.get_setting("ui", {})
+        self.toast_position = QComboBox()
+        for label, value in [
+            ("Top right", "top-right"),
+            ("Top left", "top-left"),
+            ("Bottom right", "bottom-right"),
+            ("Bottom left", "bottom-left"),
+        ]:
+            self.toast_position.addItem(label, value)
+        current_toast_position = str(ui_settings.get("toast_position", "top-right"))
+        for index in range(self.toast_position.count()):
+            if self.toast_position.itemData(index) == current_toast_position:
+                self.toast_position.setCurrentIndex(index)
+                break
+        ui_layout.addRow("Floating messages", self.toast_position)
+
         escalation_box = QGroupBox("Escalation")
         escalation_layout = QFormLayout(escalation_box)
         self.escalation_enabled = QCheckBox("Enabled")
@@ -2402,6 +2590,7 @@ class SettingsPage(BasePage):
         voice_layout.addRow("", make_button("Test Voice", self.test_voice))
 
         layout.addWidget(approvals_box)
+        layout.addWidget(ui_box)
         layout.addWidget(escalation_box)
         layout.addWidget(whatsapp_box)
         layout.addWidget(auto_reply_box)
@@ -2500,6 +2689,7 @@ class SettingsPage(BasePage):
                 "max_context_characters": int(codex_ai.get("max_context_characters", 2200)),
             }
         )
+        ui_settings = {"toast_position": self.toast_position.currentData() or "top-right"}
         existing_auto_reply = self.storage.get_setting("whatsapp_auto_reply", {})
         auto_reply = {
             "enabled": self.whatsapp_auto_enabled.isChecked(),
@@ -2510,6 +2700,7 @@ class SettingsPage(BasePage):
             "activity_baseline_hashes": existing_auto_reply.get("activity_baseline_hashes", []),
         }
         self.storage.set_setting("approvals", approvals)
+        self.storage.set_setting("ui", ui_settings)
         self.storage.set_setting("escalation", escalation)
         self.storage.set_setting("find_phone", find_phone)
         self.storage.set_setting("voice", voice)
@@ -2739,6 +2930,20 @@ class MainWindow(QMainWindow):
         elif "open settings" in lowered or lowered == "settings":
             self.open_page("Settings")
             response = "Settings are open."
+        elif "check gemini" in lowered or "gemini status" in lowered:
+            self.show_toast("Gemini", "Checking Gemini CLI...")
+            snapshot = connection_snapshot(self.storage)
+            gemini = snapshot["gemini"]
+            response = (
+                f"Gemini CLI is {'available' if gemini['available'] else 'not available'}"
+                f"{' and enabled' if gemini['enabled'] else ' and disabled'}."
+            )
+            self.show_toast("Gemini", response)
+        elif "check codex" in lowered or "codex status" in lowered:
+            self.show_toast("Codex", "Checking Codex CLI...")
+            codex = codex_status()
+            response = f"Codex CLI is {'available' if codex['available'] else 'not available'} at {codex['path'] or 'no path'}."
+            self.show_toast("Codex", response)
         elif "show approvals" in lowered or "open approvals" in lowered:
             self.open_page("Reply Approvals")
             response = "Reply approvals are open."
@@ -2756,6 +2961,7 @@ class MainWindow(QMainWindow):
             response = reply.text
         elif "test connections" in lowered or "check connections" in lowered:
             self.open_page("Connected Tools")
+            self.show_toast("Tools", "Checking connected tools...")
             page = self.pages[self.page_by_title["connected tools"]]
             if isinstance(page, ToolsPage):
                 page.test_all()
@@ -2980,14 +3186,29 @@ class MainWindow(QMainWindow):
                 self.position_toast()
 
     def position_toast(self) -> None:
-        if not hasattr(self, "toast_label") or not hasattr(self, "chat_button"):
+        if not hasattr(self, "toast_label"):
             return
         margin = 18
-        x = self.width() - self.toast_label.width() - 24
-        y = self.chat_button.y() - self.toast_label.height() - margin
-        if hasattr(self, "floating_chat") and self.floating_chat.isVisible():
-            y = min(y, self.chat_button.y() - self.floating_chat.height() - self.toast_label.height() - margin * 2)
-        self.toast_label.move(max(12, x), max(42, y))
+        ui_settings = self.storage.get_setting("ui", {})
+        position = str(ui_settings.get("toast_position", "top-right") or "top-right").lower()
+        if position not in {"top-right", "top-left", "bottom-right", "bottom-left"}:
+            position = "top-right"
+        left_margin = margin
+        if position.endswith("left") and hasattr(self, "sidebar") and self.sidebar.isVisible():
+            left_margin = self.sidebar.width() + margin
+        max_x = max(margin, self.width() - self.toast_label.width() - margin)
+        x = max_x if position.endswith("right") else left_margin
+        if position.startswith("top"):
+            y = self.menuBar().height() + margin
+        else:
+            if hasattr(self, "chat_button"):
+                y = self.chat_button.y() - self.toast_label.height() - margin
+                if hasattr(self, "floating_chat") and self.floating_chat.isVisible():
+                    y = min(y, self.chat_button.y() - self.floating_chat.height() - self.toast_label.height() - margin * 2)
+            else:
+                y = self.height() - self.toast_label.height() - margin
+        max_y = max(self.menuBar().height() + margin, self.height() - self.toast_label.height() - margin)
+        self.toast_label.move(max(margin, min(x, max_x)), max(self.menuBar().height() + 8, min(y, max_y)))
 
     def closeEvent(self, event: Any) -> None:
         if hasattr(self, "floating_chat"):
@@ -3112,6 +3333,11 @@ class MainWindow(QMainWindow):
                 border: 1px solid #24566b;
                 border-radius: 7px;
                 background: #0a1429;
+            }
+            QDialog#ruleBuilderDialog {
+                background: #0a1429;
+                border: 1px solid #24566b;
+                border-radius: 7px;
             }
             QLabel#ruleEditorTitle {
                 color: #f4ffff;

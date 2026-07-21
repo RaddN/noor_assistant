@@ -11,6 +11,9 @@
     "sending_messages": true,
     "risky_commands": true
   },
+  "ui": {
+    "toast_position": "top-right"
+  },
   "escalation": {
     "enabled": false,
     "teams_enabled": false,
