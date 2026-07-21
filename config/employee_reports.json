@@ -1,0 +1,67 @@
+{
+  "version": 1,
+  "owner_names": [
+    "Ashfuq Hossain Raihan"
+  ],
+  "employee_directory": {
+    "spreadsheet_url": "https://docs.google.com/spreadsheets/d/1d58EallM_JNDjoGw4e1td78j7vSEWN7nVLFNcO5AMPU/edit?usp=sharing",
+    "sheet_name": "Employees",
+    "range": "A1:AH1000",
+    "active_statuses": [
+      "Active"
+    ]
+  },
+  "google": {
+    "credentials_path": "E:/ESEO/content-review-manager/credentials.json",
+    "token_path": "E:/ESEO/content-review-manager/.secrets/token.json"
+  },
+  "targets": [
+    {
+      "id": "my-teletalk",
+      "label": "My Teletalk",
+      "contact": "01566085486",
+      "chat_id": "239067040112774@lid",
+      "enabled": true,
+      "test_only": true
+    }
+  ],
+  "workbooks": [
+    {
+      "id": "degebitskliniek-content",
+      "team": "Content Writing",
+      "project": "Degebitskliniek Project",
+      "type": "content_writer",
+      "spreadsheet_url": "https://docs.google.com/spreadsheets/d/10bAltbGExinyMm6tfomoggJbCb-pKR97mVJZngdhU3k/edit?usp=sharing",
+      "sheet_name": "June 2026",
+      "range": "A1:AB1003",
+      "employee_aliases": {
+        "Rafi": "Rifat Hasan Rafi",
+        "Efti": "Tahlil Islam Efti"
+      },
+      "columns": {
+        "keyword": "Main Keyword",
+        "type": "Type",
+        "writer": "Writer",
+        "word_count": "Word Count",
+        "date": "Date",
+        "draft_status": "Draft Status",
+        "proofread": "Proofread",
+        "translation": "Translation",
+        "publication": "Publications",
+        "review_status": "Review Status"
+      }
+    }
+  ],
+  "schedules": {
+    "weekly": {
+      "target_id": "my-teletalk",
+      "day": "Friday",
+      "time": "9:00 PM"
+    },
+    "monthly": {
+      "target_id": "my-teletalk",
+      "day": "last_day",
+      "time": "9:15 PM"
+    }
+  }
+}

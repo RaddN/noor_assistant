@@ -1371,7 +1371,7 @@ class WhatsAppRulesPage(BasePage):
             self.trigger_filter.addItem(label, value)
         self.trigger_filter.currentIndexChanged.connect(self.refresh)
         self.action_filter = QComboBox()
-        for label, value in [("All actions", "all"), ("Reply", "reply"), ("Noor brain", "assistant"), ("AI", "ai"), ("Tool", "tool"), ("Log", "log")]:
+        for label, value in [("All actions", "all"), ("Reply", "reply"), ("Noor brain", "assistant"), ("AI", "ai"), ("Tool", "tool"), ("Report", "report"), ("Log", "log")]:
             self.action_filter.addItem(label, value)
         self.action_filter.currentIndexChanged.connect(self.refresh)
         toolbar_layout.addWidget(self.search_input, 2)
@@ -1619,6 +1619,9 @@ class WhatsAppRulesPage(BasePage):
                         continue
                 elif action_filter == "tool":
                     if not action_types.intersection({"tool", "safe_tool"}):
+                        continue
+                elif action_filter == "report":
+                    if not action_types.intersection({"employee_report", "weekly_report", "monthly_report"}):
                         continue
                 elif action_filter not in action_types:
                     continue
@@ -1940,7 +1943,7 @@ class WhatsAppRulesPage(BasePage):
         layout.setSpacing(8)
 
         type_combo = QComboBox()
-        for label, value in [("Direct reply", "reply"), ("Noor brain", "assistant"), ("AI provider", "ai"), ("Safe tool command", "tool"), ("Log note", "log")]:
+        for label, value in [("Direct reply", "reply"), ("Noor brain", "assistant"), ("AI provider", "ai"), ("Safe tool command", "tool"), ("Employee report", "employee_report"), ("Log note", "log")]:
             type_combo.addItem(label, value)
         layout.addWidget(QLabel("Action"))
         layout.addWidget(type_combo)
@@ -2023,10 +2026,23 @@ class WhatsAppRulesPage(BasePage):
         log_text.setMaximumHeight(72)
         log_layout.addWidget(log_text)
 
+        report_page = QWidget()
+        report_layout = QGridLayout(report_page)
+        report_layout.setContentsMargins(0, 0, 0, 0)
+        report_type = QComboBox()
+        report_type.addItem("Weekly progress report", "weekly")
+        report_type.addItem("Monthly progress report", "monthly")
+        report_note = QLabel("Generates a professional PNG report from configured employee and project sheets, then sends it with the WhatsApp caption.")
+        report_note.setWordWrap(True)
+        report_layout.addWidget(QLabel("Report"), 0, 0)
+        report_layout.addWidget(report_type, 0, 1)
+        report_layout.addWidget(report_note, 1, 0, 1, 2)
+
         stack.addWidget(reply_page)
         stack.addWidget(assistant_page)
         stack.addWidget(ai_page)
         stack.addWidget(tool_page)
+        stack.addWidget(report_page)
         stack.addWidget(log_page)
         type_combo.currentIndexChanged.connect(stack.setCurrentIndex)
         layout.addWidget(stack)
@@ -2064,6 +2080,8 @@ class WhatsAppRulesPage(BasePage):
                 if summarize_with:
                     action["summarize_with"] = summarize_with
                     action["summary_prompt"] = tool_summary_prompt.toPlainText().strip() or "Summarize this tool result for a concise WhatsApp reply."
+            elif action_type == "employee_report":
+                action = {"type": "employee_report", "report": str(report_type.currentData() or "weekly")}
             else:
                 action = {"type": "log", "prompt": log_text.toPlainText().strip() or "WhatsApp rule matched."}
             self.current_actions.append(action)
@@ -2119,7 +2137,7 @@ class WhatsAppRulesPage(BasePage):
             if operator == "between":
                 value = f"{trigger.get('start') or ''} to {trigger.get('end') or ''}"
             else:
-                value = str(trigger.get("date") or "")
+                value = str(trigger.get("date") or trigger.get("month_day") or trigger.get("day") or "")
             return f"{operator} {value}".strip()
         return ""
 
@@ -2134,6 +2152,9 @@ class WhatsAppRulesPage(BasePage):
         if action_type in {"tool", "safe_tool"}:
             summary = f", summarize with {action.get('summarize_with')}" if action.get("summarize_with") else ""
             return f"{action.get('tool_id')}, command {action.get('command_index', 0)}{summary}"
+        if action_type in {"employee_report", "weekly_report", "monthly_report"}:
+            report_type = action.get("report") or action.get("kind") or action_type.replace("_report", "")
+            return f"{str(report_type).title()} employee progress report with image"
         return str(action.get("prompt") or action.get("text") or "")[:160]
 
     def new_rule(self) -> None:

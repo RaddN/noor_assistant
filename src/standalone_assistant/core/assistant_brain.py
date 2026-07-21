@@ -62,6 +62,9 @@ class AssistantBrain:
         if productivity_reply:
             return AssistantReply(productivity_reply)
 
+        if "employee" in lowered or "staff" in lowered or "team member" in lowered or "weekly report" in lowered or "monthly report" in lowered:
+            return AssistantReply(self.employee_status(text, lowered))
+
         if "weather" in lowered:
             location = self._after_keywords(text, ["weather in", "weather for", "weather"])
             result = weather(location or "Dhaka")
@@ -225,6 +228,32 @@ class AssistantBrain:
                 return f"{result.message} {result.error}".strip()
 
         return ""
+
+    def employee_status(self, text: str, lowered: str) -> str:
+        from standalone_assistant.core.employee_reports import EmployeeReportService
+
+        service = EmployeeReportService()
+        if "weekly report" in lowered or ("weekly" in lowered and "report" in lowered):
+            result = service.generate_report("weekly")
+            return f"{result.caption}\nImage: {result.image_path}" if result.ok else f"Weekly employee report failed. {result.error}".strip()
+        if "monthly report" in lowered or ("monthly" in lowered and "report" in lowered):
+            result = service.generate_report("monthly")
+            return f"{result.caption}\nImage: {result.image_path}" if result.ok else f"Monthly employee report failed. {result.error}".strip()
+        try:
+            config = service.load_config()
+            employees = service.load_employees(config)
+        except Exception as exc:
+            return f"Employee directory is configured but could not be read. {exc}".strip()
+        rows = sorted(employees.values(), key=lambda item: (item.department.casefold(), item.name.casefold()))
+        if not rows:
+            return "No active employees were found in the configured employee directory."
+        lines = [f"Active employees under Raihan Hossain: {len(rows)}."]
+        for employee in rows[:12]:
+            role = employee.designation or "Employee"
+            department = employee.department or "General"
+            manager = f"; reports to {employee.reporting_manager}" if employee.reporting_manager else ""
+            lines.append(f"- {employee.name}: {role}, {department}{manager}")
+        return "\n".join(lines)
 
     def add_local_task(self, title: str, due_at: str, note: str) -> None:
         from standalone_assistant.core.storage import utc_now

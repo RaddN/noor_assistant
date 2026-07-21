@@ -1,7 +1,7 @@
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
-const { Client, LocalAuth } = require('whatsapp-web.js');
+const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
 
 function parseArgs() {
   const values = {};
@@ -874,7 +874,17 @@ function handleRequest(request) {
         if (!chatId || !reply) {
           return { ok: false, message: 'Reply request failed chat verification.', data: {}, error: '' };
         }
-        await client.sendMessage(chatId, reply, { waitUntilMsgSent: true, sendSeen: true });
+        const mediaPath = String(request.media_path || request.image_path || '').trim();
+        if (mediaPath) {
+          const resolvedMediaPath = path.resolve(mediaPath);
+          if (!fs.existsSync(resolvedMediaPath)) {
+            return { ok: false, message: 'Reply image was not found.', data: {}, error: resolvedMediaPath };
+          }
+          const media = MessageMedia.fromFilePath(resolvedMediaPath);
+          await client.sendMessage(chatId, media, { caption: reply, sendSeen: true });
+        } else {
+          await client.sendMessage(chatId, reply, { waitUntilMsgSent: true, sendSeen: true });
+        }
         try {
           await client.sendSeen(chatId);
         } catch (error) {

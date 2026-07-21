@@ -114,6 +114,19 @@ Assistant identity:
 - UI smoke test confirmed every page is now wrapped in a scroll area.
 - WhatsApp automatic-reply rule-path test: a simulated unread direct `hello` produced the greeting reply only after chat and message-hash verification, then wrote a `Sent` audit record.
 - Dedicated WhatsApp bridge live-status check: connected profile with heartbeat validation; no unread chats were present at the time of the check.
+- Employee report automation:
+  - added an employee directory/report registry for `HR & Payroll` and the `Degebitskliniek Project` content-writer sheet;
+  - employee directory ignores owner row `Ashfuq Hossain Raihan` and uses only active employee profile fields needed for reporting;
+  - weekly and monthly report images are generated as local PNG dashboard cards under `data\reports\`;
+  - WhatsApp report rules can send a caption plus image attachment through the dedicated whatsapp-web.js bridge;
+  - manual `weekly report` and `monthly report` message rules are scoped to My Teletalk for testing;
+  - scheduled rules are configured for Friday 9:00 PM weekly reports and last-day 9:15 PM monthly reports, currently to My Teletalk.
+- Employee report checks:
+  - live weekly report generated for Jul 20 - Jul 24, 2026 with 24 items and 61,144 tracked words;
+  - live monthly report generated for Jul 1 - Jul 31, 2026 with 117 items and 308,908 tracked words;
+  - rule-engine dry run confirmed `weekly report` and `monthly report` produce report captions with media paths;
+  - schedule matching confirmed Friday 9:00 PM triggers only weekly and Jul 31, 2026 9:15 PM triggers only monthly;
+  - test weekly report image was sent to My Teletalk through WhatsApp.
 - Startup checks:
   - `python -m compileall -q main.py src scripts`
   - `node --check scripts\whatsapp_webjs_bridge.js`
@@ -130,7 +143,7 @@ Assistant identity:
 - Voice commands use hybrid productivity grammar, not full open conversational dictation.
 - The app can speak confirmations and summaries. Text answers now use local deterministic knowledge plus optional cached research, Gemini, and Codex fallbacks.
 - Google Workspace is connected by safely detecting the existing content workflow OAuth setup. Google Tasks/Calendar authorization is connected, but this machine's OAuth project still needs Google Tasks API and Google Calendar API enabled before live reads/creation can work.
-- Direct Google Sheets/Docs browsing inside this app is not implemented yet.
+- Direct Google Sheets employee/project report reading is implemented for configured sheets; generic ad hoc Google Sheets/Docs browsing is not implemented yet.
 - Codex sessions run through `codex exec`; interactive resume opens in a terminal.
 - Web research now extracts short source evidence from top result pages, but it is still lightweight and not a full browser automation research agent.
 - The UI is now assistant-style and scrollable, but more layout polish can still be added after testing on the real screen.
@@ -144,6 +157,7 @@ Assistant identity:
 - Windows startup registration and system tray controls.
 - Backup/restore/export UI.
 - Structured parsing of Elementor, Gutenberg, content review, and plugin review reports inside the dashboard.
+- A dedicated Employee Reports settings page for managing future team sheets and production WhatsApp groups.
 
 ## Next Recommended Development Order
 
@@ -160,6 +174,7 @@ Assistant identity:
 
 - Existing Google token and credential files are checked for presence only; contents are not opened or printed.
 - No browser profile, token, or credential is committed.
+- Employee report images are runtime output and ignored under `data\reports\`; private payroll, bank, NID, and personal-contact fields are excluded from WhatsApp report images.
 - WhatsApp automatic sending is limited to unread direct chats that match a local rule. Unmatched messages are ignored. It has duplicate protection, chat/message verification, group exclusion by default, and an audit trail.
 - Find My Phone opens Google Find Hub and stays play-sound-only; Google/browser device selection remains manual.
 - Voice uses local Windows speech APIs, not Gemini and not an AI model.

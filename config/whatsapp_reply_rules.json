@@ -319,6 +319,138 @@
     ]
   },
   {
+    "id": "employee-weekly-report",
+    "name": "Employee weekly progress report",
+    "enabled": true,
+    "trigger_logic": "any",
+    "audience": {
+      "scope": "contacts",
+      "contacts": [
+        "01566085486"
+      ],
+      "aliases": [
+        {
+          "label": "My Teletalk",
+          "contact": "01566085486"
+        }
+      ]
+    },
+    "triggers": [
+      {
+        "type": "message",
+        "match": "regex",
+        "value": "\\b(weekly|week|this week)\\b.*\\b(employee|team|work|working|progress|report)\\b|\\bweekly report\\b"
+      }
+    ],
+    "actions": [
+      {
+        "type": "employee_report",
+        "report": "weekly"
+      }
+    ]
+  },
+  {
+    "id": "employee-monthly-report",
+    "name": "Employee monthly progress report",
+    "enabled": true,
+    "trigger_logic": "any",
+    "audience": {
+      "scope": "contacts",
+      "contacts": [
+        "01566085486"
+      ],
+      "aliases": [
+        {
+          "label": "My Teletalk",
+          "contact": "01566085486"
+        }
+      ]
+    },
+    "triggers": [
+      {
+        "type": "message",
+        "match": "regex",
+        "value": "\\b(monthly|month|this month)\\b.*\\b(employee|team|work|working|progress|report)\\b|\\bmonthly report\\b"
+      }
+    ],
+    "actions": [
+      {
+        "type": "employee_report",
+        "report": "monthly"
+      }
+    ]
+  },
+  {
+    "id": "employee-weekly-report-schedule",
+    "name": "Scheduled Friday weekly employee report",
+    "enabled": true,
+    "trigger_logic": "all",
+    "audience": {
+      "scope": "contacts",
+      "contacts": [
+        "01566085486"
+      ],
+      "aliases": [
+        {
+          "label": "My Teletalk",
+          "contact": "01566085486"
+        }
+      ]
+    },
+    "triggers": [
+      {
+        "type": "time",
+        "operator": "at",
+        "time": "9:00 PM",
+        "days": [
+          "Friday"
+        ]
+      }
+    ],
+    "actions": [
+      {
+        "type": "employee_report",
+        "report": "weekly"
+      }
+    ]
+  },
+  {
+    "id": "employee-monthly-report-schedule",
+    "name": "Scheduled monthly employee report",
+    "enabled": true,
+    "trigger_logic": "all",
+    "audience": {
+      "scope": "contacts",
+      "contacts": [
+        "01566085486"
+      ],
+      "aliases": [
+        {
+          "label": "My Teletalk",
+          "contact": "01566085486"
+        }
+      ]
+    },
+    "triggers": [
+      {
+        "type": "date",
+        "operator": "on",
+        "month_day": "last_day"
+      },
+      {
+        "type": "time",
+        "operator": "at",
+        "time": "9:15 PM"
+      }
+    ],
+    "actions": [
+      {
+        "type": "employee_report",
+        "report": "monthly"
+      }
+    ]
+  },
+  {
     "id": "thanks",
     "name": "Thanks",
     "enabled": true,

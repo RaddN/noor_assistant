@@ -20,6 +20,8 @@ WHATSAPP_BRIDGE_REQUEST = WHATSAPP_BRIDGE_DIR / "request.json"
 WHATSAPP_BRIDGE_RESPONSE = WHATSAPP_BRIDGE_DIR / "response.json"
 WHATSAPP_INCOMING_DIR = WHATSAPP_BRIDGE_DIR / "incoming"
 SCRIPTS_DIR = PROJECT_ROOT / "scripts"
+EMPLOYEE_REPORTS_CONFIG = CONFIG_DIR / "employee_reports.json"
+REPORTS_DIR = DATA_DIR / "reports"
 GOOGLE_PRODUCTIVITY_TOKEN = DATA_DIR / "google_productivity_token.json"
 TOOLS_CONFIG = CONFIG_DIR / "tools.json"
 PROJECTS_CONFIG = CONFIG_DIR / "projects.json"
@@ -35,3 +37,4 @@ def ensure_runtime_dirs() -> None:
     WHATSAPP_WEBJS_AUTH_DIR.mkdir(parents=True, exist_ok=True)
     WHATSAPP_BRIDGE_DIR.mkdir(parents=True, exist_ok=True)
     WHATSAPP_INCOMING_DIR.mkdir(parents=True, exist_ok=True)
+    REPORTS_DIR.mkdir(parents=True, exist_ok=True)

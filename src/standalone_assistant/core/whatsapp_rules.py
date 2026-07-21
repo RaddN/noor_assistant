@@ -152,6 +152,9 @@ def action_summary(rule: dict[str, Any]) -> str:
             pieces.append(f"AI: {provider}")
         elif action_type in {"tool", "safe_tool"}:
             pieces.append(f"Tool: {action.get('tool_id') or 'select'}")
+        elif action_type in {"employee_report", "weekly_report", "monthly_report"}:
+            report_type = action.get("report") or action.get("kind") or action_type.replace("_report", "")
+            pieces.append(f"Report: {str(report_type).title()}")
         elif action_type in {"note", "log"}:
             pieces.append("Log")
         else:

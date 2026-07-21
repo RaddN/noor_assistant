@@ -49,6 +49,7 @@ class WhatsAppRuleResult:
     reply: str = ""
     source: str = ""
     error: str = ""
+    media_path: str = ""
 
 
 @dataclass
@@ -254,6 +255,8 @@ class WhatsAppWebService:
             send_payload["chat_label"] = chat
         else:
             send_payload.update({"expected_chat": chat, "expected_message_hash": message_hash})
+        if rule_result.media_path:
+            send_payload["media_path"] = rule_result.media_path
         sent = self._request("send-reply", send_payload)
         if not sent.ok:
             return sent
@@ -461,6 +464,12 @@ class WhatsAppWebService:
         now = context.now or now_local()
         operator = str(trigger.get("operator") or "on").strip().casefold()
         current = now.date()
+        month_day = str(trigger.get("month_day") or trigger.get("day") or "").strip().casefold()
+        if month_day in {"last", "last_day", "last day"}:
+            next_month = (current.replace(day=28) + timedelta(days=4)).replace(day=1)
+            return current == next_month - timedelta(days=1)
+        if month_day.isdigit():
+            return current.day == int(month_day)
         if operator == "between":
             start = self._parse_date_value(str(trigger.get("start") or ""))
             end = self._parse_date_value(str(trigger.get("end") or ""))
@@ -596,6 +605,7 @@ class WhatsAppWebService:
             return WhatsAppRuleResult(True, False, source=f"rule:{rule_id}", error="Matched rule has no actions.")
         replies: list[str] = []
         sources: list[str] = []
+        media_path = ""
         for action in actions:
             result = self._execute_action(rule_id, action, message, match, context)
             if result.source:
@@ -604,11 +614,13 @@ class WhatsAppWebService:
                 return WhatsAppRuleResult(True, False, source=result.source or f"rule:{rule_id}", error=result.error)
             if result.reply.strip():
                 replies.append(result.reply.strip())
+            if result.media_path and not media_path:
+                media_path = result.media_path
         reply = "\n\n".join(replies).strip()
         source = "+".join(sources)[:120] if sources else f"rule:{rule_id}"
         if not reply:
             return WhatsAppRuleResult(True, False, source=source, error="Matched rule actions produced no reply text.")
-        return WhatsAppRuleResult(True, True, reply[:1200], source)
+        return WhatsAppRuleResult(True, True, reply[:1200], source, media_path=media_path)
 
     def _execute_action(
         self,
@@ -647,6 +659,23 @@ class WhatsAppWebService:
         if action_type in {"tool", "safe_tool"}:
             self._progress("Tools", f"Running WhatsApp rule tool action for {context.chat_label or 'direct chat'}...")
             return self._execute_tool_rule(rule_id, action, message, match, context)
+
+        if action_type in {"employee_report", "weekly_report", "monthly_report"}:
+            report_type = str(action.get("report") or action.get("kind") or "").strip().casefold()
+            if action_type == "weekly_report":
+                report_type = "weekly"
+            elif action_type == "monthly_report":
+                report_type = "monthly"
+            report_type = report_type or "weekly"
+            self._progress("Reports", f"Building {report_type} employee report for {context.chat_label or 'WhatsApp'}...")
+            from standalone_assistant.core.employee_reports import EmployeeReportService
+
+            report = EmployeeReportService().generate_report(report_type, now=context.now)
+            if not report.ok:
+                self._progress("Reports", f"Employee report failed: {report.error[:160]}")
+                return WhatsAppRuleResult(True, False, source=source, error=report.error)
+            self._progress("Reports", f"{report_type.title()} employee report ready.")
+            return WhatsAppRuleResult(True, True, report.caption, source, media_path=report.image_path)
 
         if action_type in {"note", "log"}:
             note = prompt or "WhatsApp rule matched."
@@ -734,7 +763,10 @@ class WhatsAppWebService:
                     self._record_auto_reply(contact, message_hash, "", rule_result.source or "scheduled-rule-error", "Blocked")
                     self.storage.log("warning", "WhatsApp", "Scheduled WhatsApp rule could not produce a reply.", {"rule_id": rule_id, "contact": contact, "error": rule_result.error})
                     return WhatsAppResult(False, "Scheduled WhatsApp rule could not produce a reply.", {"rule_id": rule_id, "contact": contact}, rule_result.error)
-                sent = self._request("send-reply", {"contact": contact, "chat_label": contact, "reply": rule_result.reply})
+                send_payload = {"contact": contact, "chat_label": contact, "reply": rule_result.reply}
+                if rule_result.media_path:
+                    send_payload["media_path"] = rule_result.media_path
+                sent = self._request("send-reply", send_payload)
                 if not sent.ok:
                     self._record_auto_reply(contact, message_hash, "", rule_result.source or "scheduled-send-error", "Blocked")
                     return sent
@@ -807,7 +839,10 @@ class WhatsAppWebService:
             self._progress("WhatsApp", f"Matched rule failed: {rule_result.error[:160]}")
             return WhatsAppResult(False, "Matched WhatsApp rule could not produce a reply.", error=rule_result.error)
         reply, source = rule_result.reply, rule_result.source
-        sent = self._request("send-reply", {"chat_id": chat_id, "chat_label": chat_label, "reply": reply})
+        send_payload = {"chat_id": chat_id, "chat_label": chat_label, "reply": reply}
+        if rule_result.media_path:
+            send_payload["media_path"] = rule_result.media_path
+        sent = self._request("send-reply", send_payload)
         if not sent.ok:
             return sent
         self._record_auto_reply(chat_key, event_id, reply, source, "Sent")
