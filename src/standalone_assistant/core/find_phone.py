@@ -27,6 +27,7 @@ class FindPhoneResult:
     message: str
     url: str = FIND_HUB_URL
     error: str = ""
+    data: dict[str, Any] | None = None
 
 
 class FindPhoneService:
@@ -57,6 +58,11 @@ class FindPhoneService:
 
     def open_find_hub(self) -> FindPhoneResult:
         settings = self.settings()
+        target_device = str(settings.get("target_device") or "").strip()
+        return self.ring_first_available([target_device] if target_device else [])
+
+    def ring_first_available(self, devices: list[str]) -> FindPhoneResult:
+        settings = self.settings()
         if not bool(settings.get("enabled", True)):
             return FindPhoneResult(False, "Find My Phone is disabled in Settings.")
         url = str(settings.get("url") or FIND_HUB_URL)
@@ -69,7 +75,18 @@ class FindPhoneService:
         if str(settings.get("mode") or "auto_play_sound").strip().casefold() in {"open_only", "manual"}:
             self.storage.log("warning", "Find My Phone", "Opened Google Find Hub.", {"mode": settings.get("mode", "open_only")})
             return FindPhoneResult(True, "Google Find Hub is open. Select Raihan Hossain's phone and use Play sound.", url=url)
-        return self.play_sound(settings, url)
+        requested_devices = [str(device).strip() for device in devices if str(device).strip()]
+        if not requested_devices:
+            requested_devices = [str(settings.get("target_device") or "").strip()]
+        last_result: FindPhoneResult | None = None
+        for device in [item for item in requested_devices if item]:
+            device_settings = dict(settings)
+            device_settings["target_device"] = device
+            result = self.play_sound(device_settings, url)
+            if result.ok:
+                return result
+            last_result = result
+        return last_result or FindPhoneResult(False, "No phone device was configured for Find My Phone.", url=url, error="missing target_device")
 
     def open_browser_window(self, url: str) -> tuple[bool, str]:
         for chrome_path in CHROME_CANDIDATES:
@@ -116,17 +133,17 @@ class FindPhoneService:
             )
         except subprocess.TimeoutExpired:
             self.storage.log("error", "Find My Phone", "Find Hub Play sound automation timed out.", {"device": device})
-            return FindPhoneResult(False, "Find Hub opened, but Play sound automation timed out.", url=url, error="timeout")
+            return FindPhoneResult(False, "Find Hub opened, but Play sound automation timed out.", url=url, error="timeout", data={"device": device})
         except OSError as exc:
             self.storage.log("error", "Find My Phone", "Could not run Find Hub Play sound automation.", {"error": str(exc)})
-            return FindPhoneResult(False, "Could not run Find Hub Play sound automation.", url=url, error=str(exc))
+            return FindPhoneResult(False, "Could not run Find Hub Play sound automation.", url=url, error=str(exc), data={"device": device})
 
         payload = self.parse_helper_output(completed.stdout)
         if completed.returncode != 0 or not payload.get("ok"):
             error = str(payload.get("error") or completed.stderr or completed.stdout).strip()
             message = str(payload.get("message") or "Find Hub opened, but Play sound could not be triggered.")
             self.storage.log("error", "Find My Phone", message, {"device": device, "error": error[:300]})
-            return FindPhoneResult(False, message, url=url, error=error[:300])
+            return FindPhoneResult(False, message, url=url, error=error[:300], data={"device": device})
 
         actual_device = str(payload.get("device") or device or "selected phone").strip()
         status = str(payload.get("status") or "").strip()
@@ -134,7 +151,7 @@ class FindPhoneService:
         if status:
             message = f"{message} Find Hub status: {status}."
         self.storage.log("warning", "Find My Phone", "Triggered Play sound in Google Find Hub.", {"device": actual_device, "status": status})
-        return FindPhoneResult(True, message, url=url)
+        return FindPhoneResult(True, message, url=url, data={"device": actual_device, "status": status})
 
     @staticmethod
     def parse_helper_output(output: str) -> dict[str, Any]:

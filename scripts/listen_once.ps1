@@ -40,7 +40,15 @@ try {
     [void]$commands.Add("connection status")
     [void]$commands.Add("google status")
     [void]$commands.Add("codex status")
+    [void]$commands.Add("gemini status")
+    [void]$commands.Add("teams status")
+    [void]$commands.Add("teams ack")
+    [void]$commands.Add("acknowledge teams")
+    [void]$commands.Add("stop teams alert")
+    [void]$commands.Add("stop teams urgency")
     [void]$commands.Add("whatsapp status")
+    [void]$commands.Add("voice status")
+    [void]$commands.Add("can you hear me")
     [void]$commands.Add("weather update")
     [void]$commands.Add("weather in dhaka")
     [void]$commands.Add("weather in cumilla")
@@ -49,6 +57,10 @@ try {
     [void]$commands.Add("news in bangladesh")
     [void]$commands.Add("technology news")
     [void]$commands.Add("research wordpress plugin security")
+    [void]$commands.Add("weekly report")
+    [void]$commands.Add("monthly report")
+    [void]$commands.Add("employee weekly report")
+    [void]$commands.Add("employee monthly report")
     [void]$commands.Add("use edge voice")
     [void]$commands.Add("use windows voice")
     [void]$commands.Add("make voice faster")
@@ -104,6 +116,12 @@ try {
             } catch {
                 # Some Windows speech installations do not support constrained dictation.
             }
+        }
+        try {
+            $dictation = New-Object System.Speech.Recognition.DictationGrammar
+            $recognizer.LoadGrammar($dictation)
+        } catch {
+            # Command and constrained dictation grammars still work when open dictation is unavailable.
         }
     }
 

@@ -18,6 +18,7 @@ from googleapiclient.http import MediaIoBaseDownload
 from playwright.sync_api import sync_playwright
 
 from standalone_assistant.core.paths import ASSETS_DIR, EMPLOYEE_REPORTS_CONFIG, PROJECT_ROOT, REPORT_TEMPLATES_DIR, REPORTS_DIR
+from standalone_assistant.core.storage import Storage
 from standalone_assistant.core.time_parser import now_local
 
 
@@ -26,6 +27,28 @@ SHEETS_SCOPES = [
     "https://www.googleapis.com/auth/documents",
     "https://www.googleapis.com/auth/drive.file",
 ]
+
+DAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+DAY_ALIASES = {
+    "mon": "Monday",
+    "monday": "Monday",
+    "tue": "Tuesday",
+    "tues": "Tuesday",
+    "tuesday": "Tuesday",
+    "wed": "Wednesday",
+    "weds": "Wednesday",
+    "wednesday": "Wednesday",
+    "thu": "Thursday",
+    "thur": "Thursday",
+    "thurs": "Thursday",
+    "thursday": "Thursday",
+    "fri": "Friday",
+    "friday": "Friday",
+    "sat": "Saturday",
+    "saturday": "Saturday",
+    "sun": "Sunday",
+    "sunday": "Sunday",
+}
 
 
 @dataclass
@@ -123,8 +146,9 @@ class ReportResult:
 
 
 class EmployeeReportService:
-    def __init__(self, config_path: Path = EMPLOYEE_REPORTS_CONFIG) -> None:
+    def __init__(self, config_path: Path = EMPLOYEE_REPORTS_CONFIG, storage: Storage | None = None) -> None:
         self.config_path = config_path
+        self.storage = storage
         self._sheets_service = None
         self._drive_service = None
 
@@ -133,7 +157,14 @@ class EmployeeReportService:
             config = json.loads(self.config_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             config = {}
-        return config if isinstance(config, dict) else {}
+        config = config if isinstance(config, dict) else {}
+        if self.storage:
+            report_settings = self.storage.get_setting("employee_reports", {})
+            if isinstance(report_settings, dict) and "weekend_days" in report_settings:
+                calendar_settings = config.setdefault("calendar", {})
+                if isinstance(calendar_settings, dict):
+                    calendar_settings["weekend_days"] = report_settings.get("weekend_days")
+        return config
 
     def generate_report(self, kind: str = "weekly", *, now: datetime | None = None) -> ReportResult:
         kind = kind.strip().casefold()
@@ -354,7 +385,7 @@ class EmployeeReportService:
                 continue
             if self.norm(target.get("team", "")) != employee_department:
                 continue
-            working_days = {self.norm(day)[:3] for day in target.get("working_days", []) if str(day).strip()}
+            working_days = self.working_day_keys(config, target)
             history = [item for item in target.get("history", []) if isinstance(item, dict)]
             history.sort(key=lambda item: str(item.get("start_date") or "0000-00-00"))
             total = 0
@@ -369,6 +400,41 @@ class EmployeeReportService:
                 current += timedelta(days=1)
             return total, days
         return 0, 0
+
+    def weekend_days(self, config: dict[str, Any]) -> list[str]:
+        calendar_settings = config.get("calendar", {})
+        configured = calendar_settings.get("weekend_days", ["Friday"]) if isinstance(calendar_settings, dict) else ["Friday"]
+        days = self.normalize_days(configured)
+        return days or ["Friday"]
+
+    def weekend_indexes(self, config: dict[str, Any]) -> set[int]:
+        return {DAY_NAMES.index(day) for day in self.weekend_days(config)}
+
+    def working_day_keys(self, config: dict[str, Any], target: dict[str, Any] | None = None) -> set[str]:
+        calendar_settings = config.get("calendar", {})
+        if isinstance(calendar_settings, dict) and "weekend_days" in calendar_settings:
+            weekends = set(self.weekend_days(config))
+            return {self.norm(day)[:3] for day in DAY_NAMES if day not in weekends}
+        configured = (target or {}).get("working_days", []) if isinstance(target, dict) else []
+        return {self.norm(day)[:3] for day in self.normalize_days(configured)}
+
+    @classmethod
+    def normalize_days(cls, value: Any) -> list[str]:
+        if isinstance(value, str):
+            pieces = re.split(r"[,;/|]+|\band\b", value, flags=re.IGNORECASE)
+        elif isinstance(value, list):
+            pieces = value
+        else:
+            pieces = []
+        days: list[str] = []
+        for piece in pieces:
+            key = cls.norm(str(piece)).strip()
+            if not key:
+                continue
+            day = DAY_ALIASES.get(key, DAY_ALIASES.get(key[:3]))
+            if day and day not in days:
+                days.append(day)
+        return days
 
     @classmethod
     def target_for_day(cls, history: list[dict[str, Any]], current: date) -> int:
@@ -671,6 +737,7 @@ class EmployeeReportService:
         return html.escape(str(value or ""), quote=True)
 
     def period(self, kind: str, now: datetime) -> tuple[date, date, str]:
+        config = self.load_config()
         today = now.date()
         if kind == "monthly":
             end_day = calendar.monthrange(today.year, today.month)[1]
@@ -678,8 +745,13 @@ class EmployeeReportService:
             end = date(today.year, today.month, end_day)
             label = f"{start:%b 1} - {end:%b %d, %Y}"
             return start, end, label
-        start = today - timedelta(days=today.weekday())
-        end = start + timedelta(days=4)
+        weekends = self.weekend_indexes(config)
+        if not weekends or len(weekends) >= 7:
+            weekends = {4}
+        start_index = (max(weekends) + 1) % 7
+        end_index = (min(weekends) - 1) % 7
+        start = today - timedelta(days=(today.weekday() - start_index) % 7)
+        end = start + timedelta(days=(end_index - start_index) % 7)
         label = f"{start:%b %d} - {end:%b %d, %Y}"
         return start, end, label
 

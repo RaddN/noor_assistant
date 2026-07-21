@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 from standalone_assistant.core.ai_response import AIResponseService
 from standalone_assistant.core.connectors import ToolRegistry
@@ -11,6 +12,7 @@ from standalone_assistant.core.find_phone import FindPhoneService
 from standalone_assistant.core.google_productivity import GoogleProductivityService
 from standalone_assistant.core.paths import PROJECT_ROOT
 from standalone_assistant.core.storage import Storage
+from standalone_assistant.core.teams_alerts import TeamsAlertService
 from standalone_assistant.core.time_parser import format_local_datetime, parse_when
 from standalone_assistant.core.whatsapp_web import WhatsAppWebService
 from standalone_assistant.core.web_research import ResearchResult, answer_question, news, search_web, weather
@@ -24,8 +26,9 @@ class AssistantReply:
 
 
 class AssistantBrain:
-    def __init__(self, storage: Storage) -> None:
+    def __init__(self, storage: Storage, progress_callback: Callable[[str, str, str], None] | None = None) -> None:
         self.storage = storage
+        self.progress_callback = progress_callback
 
     def identity(self) -> dict[str, str]:
         identity = self.storage.get_setting("identity", {})
@@ -51,8 +54,12 @@ class AssistantBrain:
 
         if lowered in {"what can you do", "help", "commands", "what can you do?"}:
             return AssistantReply(
-                "You can ask: open tools, read summary, create todo, remind me, schedule event, find my phone, calendar status, tool status, project status, Codex status, Google status, WhatsApp status, weather in Dhaka, latest news, or any research question."
+                "You can ask: open tools, read summary, create todo, remind me, schedule event, find my phone, calendar status, tool status, project status, Codex status, Gemini status, Teams status, Google status, WhatsApp status, weather in Dhaka, latest news, or any research question."
             )
+
+        if self._is_teams_ack_command(lowered):
+            result = TeamsAlertService(self.storage).acknowledge_current_urgency("assistant command")
+            return AssistantReply(result.message)
 
         setting_reply = self.apply_setting_command(lowered)
         if setting_reply:
@@ -62,7 +69,7 @@ class AssistantBrain:
         if productivity_reply:
             return AssistantReply(productivity_reply)
 
-        if "employee" in lowered or "staff" in lowered or "team member" in lowered or "weekly report" in lowered or "monthly report" in lowered:
+        if "employee" in lowered or "staff" in lowered or "team member" in lowered or "weekly report" in lowered or "monthly report" in lowered or self._is_work_update_question(lowered):
             return AssistantReply(self.employee_status(text, lowered))
 
         if "weather" in lowered:
@@ -88,6 +95,12 @@ class AssistantBrain:
 
         if "codex" in lowered:
             return AssistantReply(self.codex_status_text())
+
+        if "gemini" in lowered:
+            return AssistantReply(self.gemini_status_text())
+
+        if "teams" in lowered or "microsoft team" in lowered:
+            return AssistantReply(self.teams_status_text())
 
         if "google" in lowered or "sheet" in lowered or "docs" in lowered or "drive" in lowered:
             return AssistantReply(self.google_status())
@@ -232,8 +245,8 @@ class AssistantBrain:
     def employee_status(self, text: str, lowered: str) -> str:
         from standalone_assistant.core.employee_reports import EmployeeReportService
 
-        service = EmployeeReportService()
-        if "weekly report" in lowered or ("weekly" in lowered and "report" in lowered):
+        service = EmployeeReportService(storage=self.storage)
+        if "weekly report" in lowered or ("weekly" in lowered and "report" in lowered) or self._is_work_update_question(lowered):
             result = service.generate_report("weekly")
             return f"{result.caption}\nImage: {result.image_path}" if result.ok else f"Weekly employee report failed. {result.error}".strip()
         if "monthly report" in lowered or ("monthly" in lowered and "report" in lowered):
@@ -281,10 +294,10 @@ class AssistantBrain:
             voice["rate"] = max(-10, int(voice.get("rate", 0)) - 1)
             changed = True
         elif "increase voice confidence" in lowered or "listen stricter" in lowered:
-            voice["min_confidence"] = min(0.9, float(voice.get("min_confidence", 0.35)) + 0.1)
+            voice["min_confidence"] = min(0.9, float(voice.get("min_confidence", 0.25)) + 0.1)
             changed = True
         elif "decrease voice confidence" in lowered or "listen easier" in lowered:
-            voice["min_confidence"] = max(0.1, float(voice.get("min_confidence", 0.35)) - 0.1)
+            voice["min_confidence"] = max(0.1, float(voice.get("min_confidence", 0.25)) - 0.1)
             changed = True
         elif "switch to dictation mode" in lowered or "use dictation mode" in lowered:
             voice["recognition_mode"] = "dictation"
@@ -320,7 +333,7 @@ class AssistantBrain:
             self.storage.set_setting("voice", voice)
             provider = voice.get("tts_provider", "windows")
             mode = voice.get("recognition_mode", "command")
-            confidence_text = int(float(voice.get("min_confidence", 0.35)) * 100)
+            confidence_text = int(float(voice.get("min_confidence", 0.25)) * 100)
             return f"Voice settings updated. Provider: {provider}. Listening mode: {mode}. Minimum confidence: {confidence_text}%."
         return ""
 
@@ -406,7 +419,7 @@ class AssistantBrain:
         return f"{row['title']}\n{row['body'][:900]}"
 
     def _fallback_answer(self, text: str) -> AssistantReply:
-        result = AIResponseService(self.storage, PROJECT_ROOT).answer(text, channel="assistant")
+        result = AIResponseService(self.storage, PROJECT_ROOT, self.progress_callback).answer(text, channel="assistant")
         if result.ok and result.text:
             prefix = "" if result.source.startswith(("research", "cache:research")) else f"({result.source}) "
             self.storage.log("info", "Assistant Brain", f"Fallback answered with {result.source}", {"prompt_hash": "hidden"})
@@ -443,8 +456,57 @@ class AssistantBrain:
         snap = connection_snapshot(self.storage)
         codex = snap["codex"]
         if codex["available"]:
-            return f"Codex is ready. Version: {codex['version']}. Launcher: {codex['path']}."
+            usage = codex.get("usage", {}).get("summary") or "Usage data is not available yet."
+            return f"Codex is ready. Version: {codex['version']}. Launcher: {codex['path']}. {usage}"
         return "Codex is not available on PATH."
+
+    def gemini_status_text(self) -> str:
+        gemini = connection_snapshot(self.storage)["gemini"]
+        usage = gemini.get("usage", {}).get("summary") or "Usage data is not available yet."
+        return (
+            f"Gemini CLI is {'available' if gemini['available'] else 'not available'}"
+            f"{' and enabled' if gemini['enabled'] else ' and disabled'} for fallback answers. {usage}"
+        )
+
+    def teams_status_text(self) -> str:
+        teams = connection_snapshot(self.storage)["teams"]
+        state = "enabled" if teams["enabled"] else "disabled"
+        configured = "configured" if teams["configured"] else "not configured"
+        reply_detection = "reply detection ready" if teams.get("reply_detection_enabled") and teams.get("reply_detection_configured") else "reply detection not ready"
+        active = teams.get("active_urgency")
+        active_text = ""
+        if active:
+            active_text = f" Active urgency: {active.get('event_type')} from {active.get('chat_label')} is {active.get('status')} after {active.get('alert_count')} alert(s)."
+        return f"Teams fallback is {state} and {configured} in {teams['mode']} mode; {reply_detection}. {teams['message']}{active_text}"
+
+    @staticmethod
+    def _is_teams_ack_command(lowered: str) -> bool:
+        commands = {
+            "teams ack",
+            "team ack",
+            "ack teams",
+            "acknowledge teams",
+            "acknowledge team",
+            "teams acknowledged",
+            "team acknowledged",
+            "stop teams alert",
+            "stop team alert",
+            "stop teams alerts",
+            "stop team alerts",
+            "stop teams urgency",
+            "stop team urgency",
+            "teams handled",
+            "team handled",
+        }
+        return lowered.strip() in commands
+
+    @staticmethod
+    def _is_work_update_question(lowered: str) -> bool:
+        return (
+            "project" not in lowered
+            and re.search(r"\bwork(?:ing)?\b", lowered) is not None
+            and re.search(r"\b(update|updates|progress|status)\b", lowered) is not None
+        )
 
     def google_status(self) -> str:
         google = connection_snapshot(self.storage)["google"]

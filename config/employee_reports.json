@@ -21,16 +21,22 @@
     "weekly": "templates/reports/employee_weekly_report.html",
     "monthly": "templates/reports/employee_monthly_report.html"
   },
+  "calendar": {
+    "weekend_days": [
+      "Friday"
+    ]
+  },
   "performance_targets": {
     "content_writer": {
       "team": "Content Writing",
       "target_unit": "content rows",
       "working_days": [
+        "Sat",
+        "Sun",
         "Mon",
         "Tue",
         "Wed",
-        "Thu",
-        "Fri"
+        "Thu"
       ],
       "history": [
         {

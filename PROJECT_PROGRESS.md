@@ -119,6 +119,7 @@ Assistant identity:
   - added an employee directory/report registry for `HR & Payroll` and the `Degebitskliniek Project` content-writer sheet;
   - employee directory ignores owner row `Ashfuq Hossain Raihan` and uses only active employee profile fields needed for reporting;
   - weekly and monthly report images are generated from manageable HTML templates under `templates\reports\`, rendered to local PNG files under `data\reports\`;
+  - report weekend days are configurable in Settings, with Friday as the default weekend so Sunday is counted as a workday;
   - report templates include the ESEO logo, employee photos from the HR sheet when the linked Drive thumbnail is accessible, and clean initials fallback when it is not;
   - content-writer targets now support historical changes: 6 rows per working day before Jul 21, 2026 and 9 rows per working day from Jul 21, 2026 onward;
   - WhatsApp report rules can send a caption plus image attachment through the dedicated whatsapp-web.js bridge;
@@ -141,6 +142,13 @@ Assistant identity:
   - default minimum confidence is now `0.35`;
   - low-confidence recognitions now ask the user to repeat instead of routing to the assistant brain.
   - hybrid mode with no speech returns no text instead of random dictation.
+- WhatsApp bridge health check:
+  - live probe reported `ok=False` with `bridge_state=orphaned` when the node bridge helper was alive but Noor's dedicated Chrome profile was not open.
+  - compile check passed after the health-gate change.
+  - live repair cleared orphaned bridge PID `22768`, started fresh bridge PID `15036`, and status moved to `CONNECTED` with `authenticated=True`.
+- WhatsApp call fallback check:
+  - temporary unmatched incoming call event produced `No WhatsApp call rule matched. Teams alert sent.`;
+  - the test asserted the AI fallback path was not called and the event file was consumed.
 
 ## Partially Done
 
@@ -150,11 +158,23 @@ Assistant identity:
 - Direct Google Sheets employee/project report reading is implemented for configured sheets; generic ad hoc Google Sheets/Docs browsing is not implemented yet.
 - Codex sessions run through `codex exec`; interactive resume opens in a terminal.
 - Web research now extracts short source evidence from top result pages, but it is still lightweight and not a full browser automation research agent.
+- The Assistant dashboard now displays Codex quota windows from local Codex session `rate_limits` data and Gemini daily remaining usage from Noor's local Gemini call count plus the configured daily cap.
+- One-way Microsoft Teams fallback alerts are implemented for WhatsApp no-rule, rule-failure, and send-failure paths. Graph direct chat, incoming webhook, and open Teams window modes are configurable in Settings; Teams OAuth/chat discovery is still manual.
+- Teams fallback now stores active urgency state and suppresses repeat alerts by chat/event/reason; Settings and assistant commands can acknowledge the current Teams urgency.
+- Teams Graph reply detection can acknowledge an active urgency when a reply appears in the target Teams chat after Noor's last alert, preventing further alerts and phone escalation for that urgency.
+- Unmatched WhatsApp direct messages now use a staged fallback: local rules first, Gemini second, Codex only if Gemini is unavailable or defers, then Teams if Raihan/manager input is required.
+- Teams urgency defaults now allow up to five alerts before a one-time Find My Phone escalation, trying `Symphony innova30` before `Redmi 10`.
+- Assistant dashboard and floating chat commands now dispatch slow answers in a background worker instead of blocking the Qt UI thread.
+- Gemini/Codex answer work and Codex sessions now use a floating progress notice; successful completion dismisses it and errors stay visible with an `X` dismiss control.
+- Hybrid voice listening now includes dictation fallback plus Gemini, Teams, and employee-report command phrases; the live voice defaults are 12 seconds and 25% minimum confidence.
+- WhatsApp bridge status now treats an alive helper without Noor's dedicated Chrome profile as not connected, so stale bridge heartbeats no longer show "already open" or "connected."
+- The WhatsApp open action now self-heals that orphaned-helper state by verifying the PID belongs to Noor's bridge, closing only that stale helper, clearing stale bridge files, and opening a fresh dedicated WhatsApp profile.
+- Unmatched WhatsApp calls now bypass Gemini/Codex and escalate directly to Teams; Gemini/Codex fallback remains message-only.
 - The UI is now assistant-style and scrollable, but more layout polish can still be added after testing on the real screen.
 
 ## Not Started Yet
 
-- Microsoft Teams alert automation.
+- Microsoft Teams OAuth setup wizard and direct chat discovery for Graph mode.
 - Google Find Hub manual device setup for additional devices.
 - Real speech-to-action flows for arbitrary message composition.
 - Full browser-controlled research sessions with screenshots and page extraction.
@@ -172,14 +192,15 @@ Assistant identity:
 5. Add structured report readers for the four existing tools.
 6. Add a compact browser-research mode for deeper research tasks.
 7. Add a compatible Gemini CLI authentication route if unknown-message replies are required without an API key.
-8. Add Teams only after acknowledgement and manual test screens are finished.
+8. Add a Teams OAuth setup wizard, chat picker, and safer token refresh flow.
 
 ## Security Notes
 
 - Existing Google token and credential files are checked for presence only; contents are not opened or printed.
 - No browser profile, token, or credential is committed.
 - Employee report images are runtime output and ignored under `data\reports\`; private payroll, bank, NID, and personal-contact fields are excluded from WhatsApp report images.
-- WhatsApp automatic sending is limited to unread direct chats that match a local rule. Unmatched messages are ignored. It has duplicate protection, chat/message verification, group exclusion by default, and an audit trail.
+- WhatsApp automatic sending is limited to unread direct chats that match a local rule or pass the unmatched-message Gemini/Codex fallback. Messages that still require Raihan/manager input are escalated to Teams. It has duplicate protection, chat/message verification, group exclusion by default, and an audit trail.
+- Teams fallback does not reply in Teams. Graph mode can read the target chat only for active-urgency reply detection; local-window mode sends through the already-open Teams chat but still needs Graph read settings for automatic reply detection. Teams tokens and webhook URLs remain local configuration, and `data\teams_graph_token.txt` is ignored by git.
 - Find My Phone opens Google Find Hub and clicks only the configured device plus `Play sound`; lost/reset actions remain untouched and manual.
 - Voice uses local Windows speech APIs, not Gemini and not an AI model.
 

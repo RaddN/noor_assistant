@@ -74,9 +74,10 @@ class SpeechService:
         settings.setdefault("edge_voice", "en-US-JennyNeural")
         settings.setdefault("rate", 0)
         settings.setdefault("volume", 100)
-        settings.setdefault("listen_timeout_seconds", 8)
-        settings.setdefault("min_confidence", 0.35)
+        settings.setdefault("listen_timeout_seconds", 12)
+        settings.setdefault("min_confidence", 0.25)
         settings.setdefault("recognition_mode", "hybrid")
+        settings.setdefault("speak_confirmations", True)
         return settings
 
     def speak(self, text: str, *, voice_name: str | None = None, rate: int | None = None, volume: int | None = None) -> bool:

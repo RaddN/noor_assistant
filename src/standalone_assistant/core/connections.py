@@ -9,6 +9,8 @@ from standalone_assistant.core.gemini_cli import GeminiCli
 from standalone_assistant.core.project_scanner import codex_status, git_status
 from standalone_assistant.core.speech import SpeechService
 from standalone_assistant.core.storage import Storage
+from standalone_assistant.core.teams_alerts import TeamsAlertService
+from standalone_assistant.core.usage_limits import usage_snapshot
 from standalone_assistant.core.whatsapp_web import WhatsAppWebService
 
 
@@ -23,6 +25,9 @@ def connection_snapshot(storage: Storage) -> dict[str, Any]:
     whatsapp = WhatsAppWebService(storage).status()
     gemini_settings = storage.get_setting("gemini_cli", {})
     gemini_path = GeminiCli(gemini_settings, Path.cwd()).detect()
+    usage = usage_snapshot(storage)
+    codex["usage"] = usage["codex"]
+    teams = TeamsAlertService(storage).status()
 
     content_root = Path("E:/ESEO/content-review-manager")
     google_credentials = content_root / "credentials.json"
@@ -85,5 +90,15 @@ def connection_snapshot(storage: Storage) -> dict[str, Any]:
             "available": bool(gemini_path),
             "enabled": bool(gemini_settings.get("enabled", False)),
             "path": gemini_path or "",
+            "usage": usage["gemini"],
+        },
+        "teams": {
+            "enabled": teams["enabled"],
+            "configured": teams["configured"],
+            "mode": teams["mode"],
+            "message": teams["message"],
+            "reply_detection_enabled": teams.get("reply_detection_enabled", False),
+            "reply_detection_configured": teams.get("reply_detection_configured", False),
+            "active_urgency": teams.get("active_urgency"),
         },
     }

@@ -141,6 +141,30 @@ class Storage:
                     updated_at TEXT NOT NULL
                 );
 
+                CREATE TABLE IF NOT EXISTS teams_alert_state (
+                    urgency_key TEXT PRIMARY KEY,
+                    chat_label TEXT NOT NULL,
+                    event_type TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    first_message_hash TEXT NOT NULL,
+                    last_message_hash TEXT NOT NULL,
+                    alert_count INTEGER NOT NULL DEFAULT 0,
+                    last_alert_at TEXT,
+                    acknowledged_at TEXT,
+                    phone_ring_count INTEGER NOT NULL DEFAULT 0,
+                    last_phone_ring_at TEXT,
+                    phone_device TEXT,
+                    last_teams_message_id TEXT,
+                    last_teams_incident_id TEXT,
+                    last_teams_reply_check_at TEXT,
+                    reply_detected_at TEXT,
+                    reply_message_id TEXT,
+                    reply_source TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
                 CREATE TABLE IF NOT EXISTS whatsapp_messages (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     chat_name TEXT NOT NULL,

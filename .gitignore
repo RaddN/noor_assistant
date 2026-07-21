@@ -9,6 +9,7 @@ data/*.sqlite
 data/*.sqlite-*
 data/noor.lock
 data/google_productivity_token.json
+data/teams_graph_token.txt
 data/whatsapp-web-profile/
 data/codex-sessions/
 data/whatsapp-webjs-auth/

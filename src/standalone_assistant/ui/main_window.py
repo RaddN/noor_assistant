@@ -34,6 +34,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QPlainTextEdit,
+    QProgressBar,
     QScrollArea,
     QSplitter,
     QSpinBox,
@@ -58,6 +59,7 @@ from standalone_assistant.core.paths import ICON_DIR, SESSION_DIR, ensure_runtim
 from standalone_assistant.core.project_scanner import build_codex_prompt, codex_status, find_agents, preflight_project
 from standalone_assistant.core.speech import SpeechService
 from standalone_assistant.core.storage import Storage, dumps, loads, utc_now
+from standalone_assistant.core.teams_alerts import TeamsAlertService
 from standalone_assistant.core.time_parser import format_local_timestamp, parse_when
 from standalone_assistant.core.whatsapp_web import WhatsAppWebService
 from standalone_assistant.core.whatsapp_rules import (
@@ -290,6 +292,11 @@ class BasePage(QWidget):
         if hasattr(window, "show_toast"):
             window.show_toast(title, message)
 
+    def notify_operation(self, title: str, message: str, state: str = "progress") -> None:
+        window = self.window()
+        if hasattr(window, "show_operation_notice"):
+            window.show_operation_notice(title, message, state)
+
 
 class DashboardPage(BasePage):
     title = "Assistant"
@@ -390,23 +397,9 @@ class DashboardPage(BasePage):
         text = self.command_input.text().strip()
         if not text:
             return
-        if is_find_phone_command(text):
-            self.storage.log("info", "Assistant", f"User: {text}")
-            self.command_requested.emit(text)
-            self.command_input.clear()
-            return
-        reply = self.brain.answer(text)
-        if reply.action:
-            self.command_requested.emit(reply.action)
-        else:
-            self.storage.log("info", "Assistant", f"User: {text}")
-            self.storage.log("info", "Assistant", f"Assistant: {reply.text[:600]}")
-            self.last_summary = reply.text
-            self.refresh()
-            self.show_interaction(text, reply.text)
-            if reply.speak:
-                self.speech.speak(reply.text[:900])
         self.command_input.clear()
+        self.show_interaction(text, "Working on that.")
+        self.command_requested.emit(text)
 
     def speak_summary(self) -> None:
         self.speech.speak(self.last_summary or "The assistant is ready.")
@@ -433,6 +426,9 @@ class DashboardPage(BasePage):
         voice = snapshot["voice"]
         whatsapp = snapshot["whatsapp"]
         gemini = snapshot["gemini"]
+        teams = snapshot["teams"]
+        codex_usage = codex.get("usage", {})
+        gemini_usage = gemini.get("usage", {})
         self.last_summary = (
             f"I see {open_tasks} open tasks, {approvals} approval items, "
             f"{active_escalations} active escalations, {projects} registered projects, and {tools} enabled tools."
@@ -443,6 +439,7 @@ class DashboardPage(BasePage):
             f"Codex {'ready' if codex['available'] else 'missing'} | "
             f"WhatsApp {'connected' if whatsapp['connected'] else 'connecting'} | "
             f"Gemini {'available' if gemini['available'] else 'missing'} | "
+            f"Teams {'ready' if teams['configured'] else 'setup needed'} | "
             f"Voice {'ready' if voice['connected'] else 'missing'}"
         )
         self.cards["google"].set_body(
@@ -452,14 +449,22 @@ class DashboardPage(BasePage):
         )
         self.cards["tools"].set_body(f"{snapshot['tools']['connected']} of {snapshot['tools']['total']} tool paths are available.")
         self.cards["projects"].set_body(f"{snapshot['projects']['connected']} of {snapshot['projects']['total']} project folders are registered and reachable.")
-        self.cards["codex"].set_body(f"{codex['version'] if codex['available'] else 'Codex CLI not found'}")
+        self.cards["codex"].set_body(
+            f"{codex['version'] if codex['available'] else 'Codex CLI not found'}\n"
+            f"{codex_usage.get('summary') or 'Usage: no quota data yet.'}"
+        )
         voice_label = "Edge neural voice" if voice.get("provider") == "edge" else "Windows desktop voice"
         self.cards["voice"].set_body(f"{voice_label} ready. Selected: {voice['selected'] or 'system default'}.")
         self.cards["whatsapp"].set_body(whatsapp["message"])
         self.cards["gemini"].set_body(
             f"CLI {'available' if gemini['available'] else 'not found'}. "
-            f"Unknown-message replies are {'enabled' if gemini['enabled'] else 'disabled'}.")
-        self.cards["attention"].set_body(f"{approvals} approval items and {active_escalations} active incidents need review.")
+            f"Unknown-message replies are {'enabled' if gemini['enabled'] else 'disabled'}.\n"
+            f"{gemini_usage.get('summary') or 'Usage: no local tracking data yet.'}"
+        )
+        self.cards["attention"].set_body(
+            f"{approvals} approval items and {active_escalations} active incidents need review. "
+            f"Teams fallback: {teams['message']}"
+        )
         rows = self.storage.fetch_all("SELECT ts, level, source, message FROM activity ORDER BY id DESC LIMIT 12")
         set_table_rows(self.activity, ["Time", "Level", "Source", "Message"], [[format_local_timestamp(r["ts"]), r["level"], r["source"], r["message"]] for r in rows])
 
@@ -797,11 +802,12 @@ class ProjectsPage(BasePage):
         if not self.process.waitForStarted(5000):
             self.codex_output.appendPlainText("Codex did not start.")
             self.storage.execute("UPDATE codex_sessions SET status = ?, ended_at = ?, last_error = ? WHERE id = ?", ("Failed", utc_now(), "QProcess failed to start", session_id))
+            self.notify_operation("Codex", f"Codex session {session_id} did not start.", "error")
             return
         self.process.write(prompt.encode("utf-8"))
         self.process.closeWriteChannel()
         self.storage.log("info", "Codex", f"Started Codex session for {project['name']}", {"session_id": session_id})
-        self.notify("Codex", f"Started session {session_id} for {project['name']}.")
+        self.notify_operation("Codex", f"Codex session {session_id} is running for {project['name']}.", "progress")
 
     def read_codex_output(self) -> None:
         if not self.process:
@@ -824,7 +830,11 @@ class ProjectsPage(BasePage):
             )
             self.storage.log("info" if status == "Completed" else "warning", "Codex", f"Session {self.active_session_id} {status.lower()}")
         self.codex_output.appendPlainText(f"\nCodex session finished: {status} (exit {exit_code}).")
-        self.notify("Codex", f"Session {self.active_session_id or ''} {status.lower()} (exit {exit_code}).")
+        if status == "Completed":
+            self.notify_operation("Codex", f"Codex session {self.active_session_id or ''} completed.", "success")
+            self.notify("Codex", f"Session {self.active_session_id or ''} completed.")
+        else:
+            self.notify_operation("Codex", f"Codex session {self.active_session_id or ''} failed with exit {exit_code}.", "error")
 
     def stop_codex(self) -> None:
         if not self.process or self.process.state() == QProcess.NotRunning:
@@ -834,6 +844,7 @@ class ProjectsPage(BasePage):
         if self.active_session_id:
             self.storage.execute("UPDATE codex_sessions SET status = ?, ended_at = ? WHERE id = ?", ("Stopped", utc_now(), self.active_session_id))
         self.storage.log("warning", "Codex", "Codex process stopped by user.")
+        self.notify_operation("Codex", "Codex session stopped.", "success")
         self.notify("Codex", "Codex session stopped.")
 
     def resume_last(self) -> None:
@@ -1316,7 +1327,7 @@ class WhatsAppPage(BasePage):
         super().__init__(storage)
         self.whatsapp = WhatsAppWebService(storage)
         layout = QVBoxLayout(self)
-        self.status_label = QLabel("Noor watches unread direct chats in her dedicated WhatsApp profile. Only matching WhatsApp rules can reply; unmatched messages are ignored.")
+        self.status_label = QLabel("Noor watches unread direct chats in her dedicated WhatsApp profile. Rules reply first; unmatched messages can use Gemini, Codex, then Teams fallback.")
         self.status_label.setWordWrap(True)
         actions = QHBoxLayout()
         actions.addWidget(make_button("Open Dedicated WhatsApp", self.open_dedicated_profile))
@@ -2488,6 +2499,101 @@ class SettingsPage(BasePage):
         escalation_layout.addRow("Quiet start", self.quiet_start)
         escalation_layout.addRow("Quiet end", self.quiet_end)
 
+        teams_box = QGroupBox("Microsoft Teams Alerts")
+        teams_layout = QFormLayout(teams_box)
+        teams_alerts = self.storage.get_setting("teams_alerts", {})
+        self.teams_alerts_enabled = QCheckBox("Send Teams alert when WhatsApp cannot be answered")
+        self.teams_alerts_enabled.setChecked(bool(teams_alerts.get("enabled", escalation.get("teams_enabled", False))))
+        self.teams_mode = QComboBox()
+        self.teams_mode.addItem("Graph direct chat", "graph")
+        self.teams_mode.addItem("Incoming webhook channel", "webhook")
+        self.teams_mode.addItem("Open Teams window", "local_ui")
+        current_teams_mode = str(teams_alerts.get("mode", "graph") or "graph")
+        for index in range(self.teams_mode.count()):
+            if self.teams_mode.itemData(index) == current_teams_mode:
+                self.teams_mode.setCurrentIndex(index)
+                break
+        self.teams_graph_chat_id = QLineEdit(str(teams_alerts.get("graph_chat_id", "")))
+        self.teams_graph_chat_id.setPlaceholderText("Graph chat id for the target Teams chat")
+        self.teams_graph_token_env = QLineEdit(str(teams_alerts.get("graph_token_env", "NOOR_TEAMS_GRAPH_TOKEN")))
+        self.teams_graph_chat_id_env = QLineEdit(str(teams_alerts.get("graph_chat_id_env", "NOOR_TEAMS_CHAT_ID")))
+        self.teams_graph_token_path = QLineEdit(str(teams_alerts.get("graph_token_path", "data/teams_graph_token.txt")))
+        self.teams_graph_sender_user_id = QLineEdit(str(teams_alerts.get("graph_sender_user_id", "")))
+        self.teams_graph_sender_user_id.setPlaceholderText("Optional sender user id to ignore Noor's own messages")
+        self.teams_graph_sender_user_id_env = QLineEdit(str(teams_alerts.get("graph_sender_user_id_env", "NOOR_TEAMS_SENDER_USER_ID")))
+        self.teams_webhook_url = QLineEdit(str(teams_alerts.get("webhook_url", "")))
+        self.teams_webhook_url.setPlaceholderText("Optional local webhook URL; env var is safer")
+        self.teams_webhook_url_env = QLineEdit(str(teams_alerts.get("webhook_url_env", "NOOR_TEAMS_WEBHOOK_URL")))
+        self.teams_local_window_title = QLineEdit(str(teams_alerts.get("local_window_title", "Microsoft Teams")))
+        self.teams_local_window_title.setPlaceholderText("Window title text to target")
+        self.teams_local_prefer_chrome = QCheckBox("Prefer Teams in Chrome")
+        self.teams_local_prefer_chrome.setChecked(bool(teams_alerts.get("local_prefer_chrome", False)))
+        self.teams_local_enter = QCheckBox("Send after paste")
+        self.teams_local_enter.setChecked(bool(teams_alerts.get("local_enter_to_send", True)))
+        self.teams_reply_detection = QCheckBox("Stop urgency when Teams reply is detected")
+        self.teams_reply_detection.setChecked(bool(teams_alerts.get("reply_detection_enabled", True)))
+        self.teams_preview = QCheckBox("Include WhatsApp message preview in Teams alert")
+        self.teams_preview.setChecked(bool(teams_alerts.get("include_message_preview", False)))
+        self.teams_repeat_interval = QSpinBox()
+        self.teams_repeat_interval.setRange(1, 240)
+        self.teams_repeat_interval.setSuffix(" min")
+        self.teams_repeat_interval.setValue(int(teams_alerts.get("repeat_interval_minutes", 30)))
+        self.teams_max_per_urgency = QSpinBox()
+        self.teams_max_per_urgency.setRange(1, 10)
+        self.teams_max_per_urgency.setSuffix(" alerts")
+        self.teams_max_per_urgency.setValue(int(teams_alerts.get("max_alerts_per_urgency", 5)))
+        self.teams_ack_silence = QSpinBox()
+        self.teams_ack_silence.setRange(5, 1440)
+        self.teams_ack_silence.setSuffix(" min")
+        self.teams_ack_silence.setValue(int(teams_alerts.get("ack_silence_minutes", 240)))
+        self.teams_timeout = QSpinBox()
+        self.teams_timeout.setRange(3, 30)
+        self.teams_timeout.setValue(int(teams_alerts.get("timeout_seconds", 12)))
+        teams_layout.addRow("", self.teams_alerts_enabled)
+        teams_layout.addRow("Send mode", self.teams_mode)
+        teams_layout.addRow("Graph chat ID", self.teams_graph_chat_id)
+        teams_layout.addRow("Graph chat ID env", self.teams_graph_chat_id_env)
+        teams_layout.addRow("Graph token env", self.teams_graph_token_env)
+        teams_layout.addRow("Graph token file", self.teams_graph_token_path)
+        teams_layout.addRow("Sender user ID", self.teams_graph_sender_user_id)
+        teams_layout.addRow("Sender user ID env", self.teams_graph_sender_user_id_env)
+        teams_layout.addRow("Webhook URL", self.teams_webhook_url)
+        teams_layout.addRow("Webhook URL env", self.teams_webhook_url_env)
+        teams_layout.addRow("Target window", self.teams_local_window_title)
+        teams_layout.addRow("", self.teams_local_prefer_chrome)
+        teams_layout.addRow("", self.teams_local_enter)
+        teams_layout.addRow("", self.teams_reply_detection)
+        teams_layout.addRow("", self.teams_preview)
+        teams_layout.addRow("Repeat interval", self.teams_repeat_interval)
+        teams_layout.addRow("Max per urgency", self.teams_max_per_urgency)
+        teams_layout.addRow("Ack silence", self.teams_ack_silence)
+        teams_layout.addRow("Timeout", self.teams_timeout)
+        teams_layout.addRow("", make_button("Acknowledge Current Teams Urgency", self.acknowledge_teams_urgency))
+        teams_layout.addRow("", make_button("Test Teams Alert", self.test_teams_alert))
+
+        report_box = QGroupBox("Employee Reports")
+        report_layout = QFormLayout(report_box)
+        report_settings = self.storage.get_setting("employee_reports", {})
+        configured_weekends = report_settings.get("weekend_days", ["Friday"]) if isinstance(report_settings, dict) else ["Friday"]
+        if isinstance(configured_weekends, str):
+            configured_weekends = [configured_weekends]
+        elif not isinstance(configured_weekends, list):
+            configured_weekends = ["Friday"]
+        configured_weekend_keys = {str(day).strip().casefold()[:3] for day in configured_weekends if str(day).strip()}
+        self.report_weekend_checks: dict[str, QCheckBox] = {}
+        weekend_widget = QWidget()
+        weekend_layout = QHBoxLayout(weekend_widget)
+        weekend_layout.setContentsMargins(0, 0, 0, 0)
+        weekend_layout.setSpacing(10)
+        for day in ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]:
+            check = QCheckBox(day[:3])
+            check.setToolTip(day)
+            check.setChecked(day.casefold()[:3] in configured_weekend_keys)
+            self.report_weekend_checks[day] = check
+            weekend_layout.addWidget(check)
+        weekend_layout.addStretch()
+        report_layout.addRow("Weekend days", weekend_widget)
+
         whatsapp_box = QGroupBox("WhatsApp Web")
         whatsapp_layout = QFormLayout(whatsapp_box)
         whatsapp = self.storage.get_setting("whatsapp_web", {})
@@ -2512,10 +2618,13 @@ class SettingsPage(BasePage):
         self.whatsapp_auto_poll.setValue(int(auto_reply.get("poll_seconds", 12)))
         self.whatsapp_skip_groups = QCheckBox("Never reply in group chats")
         self.whatsapp_skip_groups.setChecked(bool(auto_reply.get("skip_groups", True)))
-        auto_reply_layout.addRow("Mode", QLabel("Rules decide direct replies, actions, tool checks, research, Gemini, or Codex. Unmatched messages are ignored."))
+        self.whatsapp_ai_fallback = QCheckBox("Ask Gemini/Codex when no rule matches")
+        self.whatsapp_ai_fallback.setChecked(bool(auto_reply.get("ai_fallback_for_unmatched", True)))
+        auto_reply_layout.addRow("Mode", QLabel("Rules answer first. Unmatched direct messages can use Gemini, Codex, then Teams fallback."))
         auto_reply_layout.addRow("", self.whatsapp_auto_enabled)
         auto_reply_layout.addRow("Check unread chats", self.whatsapp_auto_poll)
         auto_reply_layout.addRow("", self.whatsapp_skip_groups)
+        auto_reply_layout.addRow("", self.whatsapp_ai_fallback)
 
         ai_box = QGroupBox("AI Brain")
         ai_layout = QFormLayout(ai_box)
@@ -2550,9 +2659,13 @@ class SettingsPage(BasePage):
         self.gemini_timeout = QSpinBox()
         self.gemini_timeout.setRange(10, 120)
         self.gemini_timeout.setValue(int(gemini.get("timeout_seconds", 45)))
+        self.gemini_daily_limit = QSpinBox()
+        self.gemini_daily_limit.setRange(0, 10000)
+        self.gemini_daily_limit.setValue(int(gemini.get("daily_request_limit", 1000)))
         gemini_layout.addRow("", self.gemini_enabled)
         gemini_layout.addRow("Model", self.gemini_model)
         gemini_layout.addRow("Timeout", self.gemini_timeout)
+        gemini_layout.addRow("Daily request limit", self.gemini_daily_limit)
         gemini_layout.addRow("Mode", QLabel("Non-interactive JSON only; read-only approval mode; no sending"))
 
         codex_ai_box = QGroupBox("Codex AI Fallback")
@@ -2612,11 +2725,11 @@ class SettingsPage(BasePage):
         self.voice_volume.setValue(int(voice.get("volume", 100)))
         self.listen_timeout = QSpinBox()
         self.listen_timeout.setRange(3, 30)
-        self.listen_timeout.setValue(int(voice.get("listen_timeout_seconds", 8)))
+        self.listen_timeout.setValue(int(voice.get("listen_timeout_seconds", 12)))
         self.voice_confidence = QSpinBox()
         self.voice_confidence.setRange(0, 100)
         self.voice_confidence.setSuffix("%")
-        self.voice_confidence.setValue(int(float(voice.get("min_confidence", 0.35)) * 100))
+        self.voice_confidence.setValue(int(float(voice.get("min_confidence", 0.25)) * 100))
         self.recognition_mode = QComboBox()
         self.recognition_mode.addItem("Hybrid productivity mode (recommended)", "hybrid")
         self.recognition_mode.addItem("Command mode (strict)", "command")
@@ -2638,6 +2751,8 @@ class SettingsPage(BasePage):
         layout.addWidget(approvals_box)
         layout.addWidget(ui_box)
         layout.addWidget(escalation_box)
+        layout.addWidget(teams_box)
+        layout.addWidget(report_box)
         layout.addWidget(whatsapp_box)
         layout.addWidget(auto_reply_box)
         layout.addWidget(ai_box)
@@ -2667,13 +2782,30 @@ class SettingsPage(BasePage):
         self.save(show_message=False)
         self.speech.speak("Hello. I am ready to help with Google, tools, projects, and Codex.")
 
+    def test_teams_alert(self) -> None:
+        self.save(show_message=False)
+        result = TeamsAlertService(self.storage).send_alert(
+            "Noor Teams test",
+            "This is a one-way Teams alert test from Noor. No Teams replies are read by Noor.",
+            {"origin": "settings-test"},
+        )
+        QMessageBox.information(
+            self,
+            "Teams Alert",
+            result.message if result.ok else f"{result.message} {result.error}".strip(),
+        )
+
+    def acknowledge_teams_urgency(self) -> None:
+        result = TeamsAlertService(self.storage).acknowledge_current_urgency("settings")
+        QMessageBox.information(self, "Teams Urgency", result.message)
+
     def save(self, show_message: bool = True) -> None:  # type: ignore[override]
         approvals = {key: check.isChecked() for key, check in self.approval_checks.items()}
         escalation = self.storage.get_setting("escalation", {})
         escalation.update(
             {
                 "enabled": self.escalation_enabled.isChecked(),
-                "teams_enabled": self.teams_enabled.isChecked(),
+                "teams_enabled": self.teams_enabled.isChecked() or self.teams_alerts_enabled.isChecked(),
                 "find_hub_enabled": self.find_hub_enabled.isChecked(),
                 "quiet_hours_start": self.quiet_start.text().strip(),
                 "quiet_hours_end": self.quiet_end.text().strip(),
@@ -2714,6 +2846,7 @@ class SettingsPage(BasePage):
                 "enabled": self.gemini_enabled.isChecked(),
                 "model": self.gemini_model.text().strip() or "gemini-2.5-flash",
                 "timeout_seconds": self.gemini_timeout.value(),
+                "daily_request_limit": self.gemini_daily_limit.value(),
                 "max_context_characters": int(gemini.get("max_context_characters", 2200)),
             }
         )
@@ -2736,12 +2869,43 @@ class SettingsPage(BasePage):
             }
         )
         ui_settings = {"toast_position": self.toast_position.currentData() or "top-right"}
+        existing_teams_alerts = self.storage.get_setting("teams_alerts", {})
+        existing_teams_alerts = existing_teams_alerts if isinstance(existing_teams_alerts, dict) else {}
+        teams_alerts = {
+            "enabled": self.teams_alerts_enabled.isChecked(),
+            "mode": self.teams_mode.currentData() or "graph",
+            "graph_chat_id": self.teams_graph_chat_id.text().strip(),
+            "graph_chat_id_env": self.teams_graph_chat_id_env.text().strip() or "NOOR_TEAMS_CHAT_ID",
+            "graph_token_env": self.teams_graph_token_env.text().strip() or "NOOR_TEAMS_GRAPH_TOKEN",
+            "graph_token_path": self.teams_graph_token_path.text().strip() or "data/teams_graph_token.txt",
+            "graph_sender_user_id": self.teams_graph_sender_user_id.text().strip(),
+            "graph_sender_user_id_env": self.teams_graph_sender_user_id_env.text().strip() or "NOOR_TEAMS_SENDER_USER_ID",
+            "webhook_url": self.teams_webhook_url.text().strip(),
+            "webhook_url_env": self.teams_webhook_url_env.text().strip() or "NOOR_TEAMS_WEBHOOK_URL",
+            "local_window_title": self.teams_local_window_title.text().strip() or "Microsoft Teams",
+            "local_prefer_chrome": self.teams_local_prefer_chrome.isChecked(),
+            "local_enter_to_send": self.teams_local_enter.isChecked(),
+            "reply_detection_enabled": self.teams_reply_detection.isChecked(),
+            "include_message_preview": self.teams_preview.isChecked(),
+            "repeat_interval_minutes": self.teams_repeat_interval.value(),
+            "max_alerts_per_urgency": self.teams_max_per_urgency.value(),
+            "ack_silence_minutes": self.teams_ack_silence.value(),
+            "ring_phone_after_alerts": int(existing_teams_alerts.get("ring_phone_after_alerts", 5)),
+            "ring_phone_once": bool(existing_teams_alerts.get("ring_phone_once", True)),
+            "phone_fallback_devices": existing_teams_alerts.get("phone_fallback_devices", ["Symphony innova30", "Redmi 10"]),
+            "timeout_seconds": self.teams_timeout.value(),
+        }
+        report_settings = self.storage.get_setting("employee_reports", {})
+        report_settings = report_settings if isinstance(report_settings, dict) else {}
+        weekend_days = [day for day, check in self.report_weekend_checks.items() if check.isChecked()]
+        report_settings["weekend_days"] = weekend_days or ["Friday"]
         existing_auto_reply = self.storage.get_setting("whatsapp_auto_reply", {})
         auto_reply = {
             "enabled": self.whatsapp_auto_enabled.isChecked(),
             "poll_seconds": self.whatsapp_auto_poll.value(),
             "skip_groups": self.whatsapp_skip_groups.isChecked(),
             "fallback_scan_enabled": bool(existing_auto_reply.get("fallback_scan_enabled", True)),
+            "ai_fallback_for_unmatched": self.whatsapp_ai_fallback.isChecked(),
             "activity_baseline_ready": bool(existing_auto_reply.get("activity_baseline_ready", False)),
             "activity_baseline_hashes": existing_auto_reply.get("activity_baseline_hashes", []),
         }
@@ -2750,6 +2914,8 @@ class SettingsPage(BasePage):
         self.storage.set_setting("escalation", escalation)
         self.storage.set_setting("find_phone", find_phone)
         self.storage.set_setting("voice", voice)
+        self.storage.set_setting("teams_alerts", teams_alerts)
+        self.storage.set_setting("employee_reports", report_settings)
         self.storage.set_setting("whatsapp_web", whatsapp)
         self.storage.set_setting("whatsapp_auto_reply", auto_reply)
         self.storage.set_setting("ai_brain", ai_brain)
@@ -2791,6 +2957,7 @@ class FloatingChatDialog(QDialog):
         self.input.setPlaceholderText("Message Noor")
         self.input.setFixedHeight(78)
         send = make_button("Send", self.send_message)
+        self.pending_command = ""
         layout.addLayout(header)
         layout.addWidget(self.history, 1)
         layout.addWidget(self.input)
@@ -2806,26 +2973,79 @@ class FloatingChatDialog(QDialog):
         if is_find_phone_command(text):
             pending = "I am trying to ring your phone now. Noor will stay responsive while Find Hub works."
             self.history.append(f"<p><b>Noor</b><br>{html.escape(pending)}</p>")
-            self.storage.log("info", "Floating Chat", f"Q: {text}")
-            self.storage.log("info", "Floating Chat", f"A: {pending}")
+            self.pending_command = text
             self.command_requested.emit(text)
             self.history.moveCursor(QTextCursor.End)
             return
-        reply = self.brain.answer(text)
-        self.history.append(f"<p><b>Noor</b><br>{html.escape(reply.text)}</p>")
-        self.storage.log("info", "Floating Chat", f"Q: {text}")
-        self.storage.log("info", "Floating Chat", f"A: {reply.text[:600]}")
-        if reply.action:
-            self.command_requested.emit(reply.action)
-        if reply.speak:
-            SpeechService(self.storage).speak(reply.text[:900])
+        self.pending_command = text
+        self.history.append("<p><b>Noor</b><br>Working on that.</p>")
+        self.command_requested.emit(text)
+        self.history.moveCursor(QTextCursor.End)
+
+    def append_response(self, command: str, response: str) -> None:
+        if self.pending_command and self.pending_command != command:
+            return
+        self.pending_command = ""
+        self.history.append(f"<p><b>Noor</b><br>{html.escape(response)}</p>")
         self.history.moveCursor(QTextCursor.End)
 
 
+class FloatingOperationNotice(QFrame):
+    def __init__(self, parent: QWidget) -> None:
+        super().__init__(parent)
+        self.setObjectName("operationNotice")
+        self.setProperty("state", "progress")
+        self.setFixedWidth(390)
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(14, 12, 12, 12)
+        outer.setSpacing(8)
+
+        header = QHBoxLayout()
+        header.setSpacing(8)
+        self.title_label = QLabel("Working")
+        self.title_label.setObjectName("operationNoticeTitle")
+        self.close_button = QToolButton(self)
+        self.close_button.setObjectName("operationNoticeClose")
+        self.close_button.setText("X")
+        self.close_button.setToolTip("Dismiss")
+        self.close_button.setFixedSize(24, 24)
+        self.close_button.clicked.connect(self.hide)
+        header.addWidget(self.title_label, 1)
+        header.addWidget(self.close_button)
+
+        self.body_label = QLabel("")
+        self.body_label.setObjectName("operationNoticeBody")
+        self.body_label.setWordWrap(True)
+        self.progress = QProgressBar(self)
+        self.progress.setObjectName("operationNoticeProgress")
+        self.progress.setRange(0, 0)
+        self.progress.setTextVisible(False)
+        self.progress.setFixedHeight(6)
+
+        outer.addLayout(header)
+        outer.addWidget(self.body_label)
+        outer.addWidget(self.progress)
+        self.hide()
+
+    def set_notice(self, title: str, message: str, state: str) -> None:
+        state = state if state in {"progress", "error", "warning", "attention"} else "progress"
+        self.setProperty("state", state)
+        self.title_label.setText(title)
+        self.body_label.setText(message[:360])
+        self.progress.setVisible(state == "progress")
+        self.style().unpolish(self)
+        self.style().polish(self)
+        self.update()
+        self.adjustSize()
+
+
 class MainWindow(QMainWindow):
+    assistant_reply_finished = Signal(str, object)
     whatsapp_connection_finished = Signal(object)
     whatsapp_poll_finished = Signal(object, object)
-    whatsapp_progress = Signal(str, str)
+    whatsapp_progress = Signal(str, str, str)
+    assistant_progress = Signal(str, str, str)
     find_phone_finished = Signal(str, object)
 
     def __init__(self, storage: Storage) -> None:
@@ -2844,13 +3064,16 @@ class MainWindow(QMainWindow):
         self.last_whatsapp_incoming_hash = ""
         self.whatsapp_connection_running = False
         self.find_phone_running = False
+        self.assistant_command_running = False
         self.build_ui()
         self.apply_style()
         self.build_menu()
         self.statusBar().showMessage("Ready")
+        self.assistant_reply_finished.connect(self.handle_assistant_reply_finished)
+        self.assistant_progress.connect(self.handle_operation_notice)
         self.whatsapp_connection_finished.connect(self.handle_whatsapp_connection_finished)
         self.whatsapp_poll_finished.connect(self.handle_whatsapp_poll_finished)
-        self.whatsapp_progress.connect(self.show_toast)
+        self.whatsapp_progress.connect(self.handle_operation_notice)
         self.find_phone_finished.connect(self.handle_find_phone_finished)
         self.connection_timer = QTimer(self)
         self.connection_timer.timeout.connect(self.ensure_whatsapp_connection)
@@ -2959,6 +3182,8 @@ class MainWindow(QMainWindow):
         self.toast_label.setWordWrap(True)
         self.toast_label.setFixedWidth(360)
         self.toast_label.hide()
+        self.operation_notice = FloatingOperationNotice(self)
+        self.operation_notice.hide()
 
     def open_page(self, title: str) -> None:
         index = self.page_by_title.get(title.lower())
@@ -2993,19 +3218,27 @@ class MainWindow(QMainWindow):
             self.open_page("Settings")
             response = "Settings are open."
         elif "check gemini" in lowered or "gemini status" in lowered:
-            self.show_toast("Gemini", "Checking Gemini CLI...")
+            self.show_operation_notice("Gemini", "Checking Gemini CLI...", "progress")
             snapshot = connection_snapshot(self.storage)
             gemini = snapshot["gemini"]
             response = (
                 f"Gemini CLI is {'available' if gemini['available'] else 'not available'}"
                 f"{' and enabled' if gemini['enabled'] else ' and disabled'}."
             )
-            self.show_toast("Gemini", response)
+            if gemini["available"]:
+                self.show_operation_notice("Gemini", response, "success")
+                self.show_toast("Gemini", response)
+            else:
+                self.show_operation_notice("Gemini", response, "error")
         elif "check codex" in lowered or "codex status" in lowered:
-            self.show_toast("Codex", "Checking Codex CLI...")
+            self.show_operation_notice("Codex", "Checking Codex CLI...", "progress")
             codex = codex_status()
             response = f"Codex CLI is {'available' if codex['available'] else 'not available'} at {codex['path'] or 'no path'}."
-            self.show_toast("Codex", response)
+            if codex["available"]:
+                self.show_operation_notice("Codex", response, "success")
+                self.show_toast("Codex", response)
+            else:
+                self.show_operation_notice("Codex", response, "error")
         elif "show approvals" in lowered or "open approvals" in lowered:
             self.open_page("Reply Approvals")
             response = "Reply approvals are open."
@@ -3019,8 +3252,8 @@ class MainWindow(QMainWindow):
                 page.refresh()
                 response = page.last_summary
         elif lowered.startswith("add task ") or lowered.startswith("new task "):
-            reply = self.brain.answer(command)
-            response = reply.text
+            self.start_assistant_reply(command)
+            return
         elif "test connections" in lowered or "check connections" in lowered:
             self.open_page("Connected Tools")
             self.show_toast("Tools", "Checking connected tools...")
@@ -3034,20 +3267,46 @@ class MainWindow(QMainWindow):
             self.storage.set_setting("escalation", escalation)
             response = "Escalations are paused."
         else:
-            reply = self.brain.answer(command)
-            if reply.action and reply.action.lower() != command.lower():
-                self.route_assistant_command(reply.action)
-                return
-            response = reply.text
-            self.storage.log("info", "Assistant Command", f"Q: {command}")
-            self.storage.log("info", "Assistant Command", f"A: {response[:600]}")
+            self.start_assistant_reply(command)
+            return
         if response:
-            self.statusBar().showMessage(response)
-            self.refresh_current_page()
-            self.show_assistant_response(command, response)
-            voice = self.storage.get_setting("voice", {})
-            if voice.get("speak_confirmations", True):
-                self.speech.speak(response[:900])
+            self.deliver_assistant_response(command, response)
+
+    def start_assistant_reply(self, command: str) -> None:
+        if self.assistant_command_running:
+            self.deliver_assistant_response(command, "Noor is still finishing the previous message. Please wait a moment.", speak=False)
+            return
+        self.assistant_command_running = True
+        self.statusBar().showMessage("Noor is working...")
+        self.show_assistant_response(command, "Working on that.")
+        threading.Thread(target=self._assistant_reply_worker, args=(command,), daemon=True).start()
+
+    def _assistant_reply_worker(self, command: str) -> None:
+        try:
+            reply = AssistantBrain(self.storage, self.assistant_progress.emit).answer(command)
+        except Exception as exc:
+            self.assistant_progress.emit("Noor", f"Assistant reply failed: {exc}", "error")
+            reply = AssistantReply(f"Noor hit an error while handling that: {exc}", speak=False)
+        self.assistant_reply_finished.emit(command, reply)
+
+    def handle_assistant_reply_finished(self, command: str, reply: AssistantReply) -> None:
+        self.assistant_command_running = False
+        if reply.action and reply.action.lower() != command.lower():
+            self.route_assistant_command(reply.action)
+            return
+        self.storage.log("info", "Assistant Command", f"Q: {command}")
+        self.storage.log("info", "Assistant Command", f"A: {reply.text[:600]}")
+        self.deliver_assistant_response(command, reply.text, speak=reply.speak)
+
+    def deliver_assistant_response(self, command: str, response: str, *, speak: bool = True) -> None:
+        self.statusBar().showMessage(response)
+        self.refresh_current_page()
+        self.show_assistant_response(command, response)
+        if hasattr(self, "floating_chat") and self.floating_chat.isVisible():
+            self.floating_chat.append_response(command, response)
+        voice = self.storage.get_setting("voice", {})
+        if speak and voice.get("speak_confirmations", True):
+            self.speech.speak(response[:900])
 
     def start_find_phone(self, command: str) -> None:
         if self.find_phone_running:
@@ -3082,8 +3341,7 @@ class MainWindow(QMainWindow):
         self.show_toast("Find My Phone", response)
         self.show_assistant_response(command, response)
         if hasattr(self, "floating_chat") and self.floating_chat.isVisible():
-            self.floating_chat.history.append(f"<p><b>Noor</b><br>{html.escape(response)}</p>")
-            self.floating_chat.history.moveCursor(QTextCursor.End)
+            self.floating_chat.append_response(command, response)
         voice = self.storage.get_setting("voice", {})
         if voice.get("speak_confirmations", True):
             self.speech.speak(response[:900])
@@ -3147,8 +3405,8 @@ class MainWindow(QMainWindow):
                 self.statusBar().showMessage(message)
                 self.speech.speak("I could not understand that clearly. Please try again.")
                 return
+            self.show_assistant_response(text, "Working on that.", confidence)
             self.route_assistant_command(text)
-            self.show_assistant_response(text, self.statusBar().currentMessage(), confidence)
         else:
             error = payload.get("error") or "No speech was recognized."
             self.storage.log("warning", "Voice", f"Voice command failed: {error}")
@@ -3268,7 +3526,28 @@ class MainWindow(QMainWindow):
             event_name = "call" if incoming_type == "call" else "message"
             self.show_toast("WhatsApp", f"New direct WhatsApp {event_name} detected. Noor is checking the reply rules.")
 
-    def show_toast(self, title: str, message: str) -> None:
+    def handle_operation_notice(self, title: str, message: str, state: str = "info") -> None:
+        state = (state or "info").strip().casefold()
+        if state in {"progress", "success", "error", "warning", "attention"}:
+            self.show_operation_notice(title, message, state)
+        else:
+            self.show_toast(title, message)
+
+    def show_operation_notice(self, title: str, message: str, state: str = "progress") -> None:
+        if not hasattr(self, "operation_notice"):
+            return
+        state = (state or "progress").strip().casefold()
+        if state == "success":
+            self.operation_notice.hide()
+            return
+        if state == "warning":
+            state = "attention"
+        self.operation_notice.set_notice(title, message, state)
+        self.position_operation_notice()
+        self.operation_notice.show()
+        self.operation_notice.raise_()
+
+    def show_toast(self, title: str, message: str, state: str = "info") -> None:
         if not hasattr(self, "toast_label"):
             return
         self.toast_label.setText(f"<b>{html.escape(title)}</b><br>{html.escape(message[:240])}")
@@ -3287,6 +3566,8 @@ class MainWindow(QMainWindow):
                 self.position_floating_chat()
             if hasattr(self, "toast_label") and self.toast_label.isVisible():
                 self.position_toast()
+            if hasattr(self, "operation_notice") and self.operation_notice.isVisible():
+                self.position_operation_notice()
 
     def position_toast(self) -> None:
         if not hasattr(self, "toast_label"):
@@ -3312,6 +3593,31 @@ class MainWindow(QMainWindow):
                 y = self.height() - self.toast_label.height() - margin
         max_y = max(self.menuBar().height() + margin, self.height() - self.toast_label.height() - margin)
         self.toast_label.move(max(margin, min(x, max_x)), max(self.menuBar().height() + 8, min(y, max_y)))
+
+    def position_operation_notice(self) -> None:
+        if not hasattr(self, "operation_notice"):
+            return
+        margin = 18
+        ui_settings = self.storage.get_setting("ui", {})
+        position = str(ui_settings.get("toast_position", "top-right") or "top-right").lower()
+        if position not in {"top-right", "top-left", "bottom-right", "bottom-left"}:
+            position = "top-right"
+        left_margin = margin
+        if position.endswith("left") and hasattr(self, "sidebar") and self.sidebar.isVisible():
+            left_margin = self.sidebar.width() + margin
+        max_x = max(margin, self.width() - self.operation_notice.width() - margin)
+        x = max_x if position.endswith("right") else left_margin
+        if position.startswith("top"):
+            y = self.menuBar().height() + margin
+        else:
+            if hasattr(self, "chat_button"):
+                y = self.chat_button.y() - self.operation_notice.height() - margin
+                if hasattr(self, "floating_chat") and self.floating_chat.isVisible():
+                    y = min(y, self.chat_button.y() - self.floating_chat.height() - self.operation_notice.height() - margin * 2)
+            else:
+                y = self.height() - self.operation_notice.height() - margin
+        max_y = max(self.menuBar().height() + margin, self.height() - self.operation_notice.height() - margin)
+        self.operation_notice.move(max(margin, min(x, max_x)), max(self.menuBar().height() + 8, min(y, max_y)))
 
     def closeEvent(self, event: Any) -> None:
         if hasattr(self, "floating_chat"):
@@ -3555,6 +3861,46 @@ class MainWindow(QMainWindow):
                 border: 1px solid #31d8cc;
                 border-radius: 8px;
                 padding: 12px;
+            }
+            QFrame#operationNotice {
+                color: #efffff;
+                background: #0b2033;
+                border: 1px solid #35d3ca;
+                border-radius: 8px;
+            }
+            QFrame#operationNotice[state="error"], QFrame#operationNotice[state="attention"] {
+                background: #2a1118;
+                border: 1px solid #ff6b7c;
+            }
+            QLabel#operationNoticeTitle {
+                font-size: 14px;
+                font-weight: 700;
+                color: #f3ffff;
+            }
+            QLabel#operationNoticeBody {
+                color: #c9eef2;
+            }
+            QToolButton#operationNoticeClose {
+                background: #122b3f;
+                border: 1px solid #3b7582;
+                border-radius: 4px;
+                color: #f4ffff;
+                font-weight: 700;
+            }
+            QFrame#operationNotice[state="error"] QToolButton#operationNoticeClose,
+            QFrame#operationNotice[state="attention"] QToolButton#operationNoticeClose {
+                background: #3a1720;
+                border: 1px solid #ff7c8a;
+                color: #fff6f7;
+            }
+            QProgressBar#operationNoticeProgress {
+                border: 0;
+                background: #081423;
+                border-radius: 3px;
+            }
+            QProgressBar#operationNoticeProgress::chunk {
+                background: #2de1d2;
+                border-radius: 3px;
             }
             QTextEdit#floatingChatHistory {
                 background: #0c1930;

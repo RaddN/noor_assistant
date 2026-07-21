@@ -5,6 +5,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import sqlite3
 import subprocess
 import time
@@ -30,6 +31,7 @@ from standalone_assistant.core.paths import (
 )
 from standalone_assistant.core.process_utils import hidden_subprocess_kwargs
 from standalone_assistant.core.storage import Storage, dumps, utc_now
+from standalone_assistant.core.teams_alerts import TeamsAlertResult, TeamsAlertService
 from standalone_assistant.core.time_parser import now_local
 from standalone_assistant.core.whatsapp_rules import load_whatsapp_rules, rule_actions, rule_audience, rule_triggers
 
@@ -64,13 +66,13 @@ class WhatsAppRuleContext:
 class WhatsAppWebService:
     """Event-driven WhatsApp Web bridge with an isolated local authentication session."""
 
-    def __init__(self, storage: Storage, progress_callback: Callable[[str, str], None] | None = None) -> None:
+    def __init__(self, storage: Storage, progress_callback: Callable[[str, str, str], None] | None = None) -> None:
         self.storage = storage
         self.progress_callback = progress_callback
 
-    def _progress(self, title: str, message: str) -> None:
+    def _progress(self, title: str, message: str, state: str = "info") -> None:
         if self.progress_callback:
-            self.progress_callback(title, message)
+            self.progress_callback(title, message, state)
 
     def settings(self) -> dict[str, Any]:
         defaults = {
@@ -89,6 +91,7 @@ class WhatsAppWebService:
     def launch_login(self) -> WhatsAppResult:
         if not self.settings().get("enabled", True):
             return WhatsAppResult(False, "WhatsApp Web is disabled in Settings.")
+        cleared_stale_helper = False
         state = self._read_json(WHATSAPP_BRIDGE_STATUS)
         if state and self._bridge_is_live(state):
             self._clear_launch_marker()
@@ -98,6 +101,13 @@ class WhatsAppWebService:
         starting = self._read_json(WHATSAPP_BRIDGE_STARTING)
         if starting and self._launch_marker_is_fresh(starting):
             return WhatsAppResult(True, "Noor's dedicated WhatsApp bridge is starting.", starting)
+        if state and self._bridge_process_is_alive(state) and not self._profile_browser_pids():
+            self._clear_launch_marker()
+            stopped = self._stop_orphaned_bridge(state)
+            if not stopped.ok:
+                return stopped
+            cleared_stale_helper = True
+            state = None
         profile_pids = self._profile_browser_pids()
         if profile_pids:
             self._clear_launch_marker()
@@ -137,6 +147,8 @@ class WhatsAppWebService:
         except OSError as exc:
             return WhatsAppResult(False, "Could not open the dedicated WhatsApp profile.", error=str(exc))
         self.storage.log("info", "WhatsApp", "Opened dedicated whatsapp-web.js bridge.")
+        if cleared_stale_helper:
+            return WhatsAppResult(True, "Noor cleared the stale WhatsApp helper and opened a fresh dedicated WhatsApp Web window. Scan its QR code once if WhatsApp asks.")
         return WhatsAppResult(True, "Noor's dedicated WhatsApp Web window opened. Scan its QR code once; your normal Chrome profile is not used.")
 
     def ensure_running(self) -> WhatsAppResult:
@@ -150,6 +162,19 @@ class WhatsAppWebService:
     def status(self) -> WhatsAppResult:
         state = self._read_json(WHATSAPP_BRIDGE_STATUS)
         if not state or not self._bridge_is_live(state):
+            if state and self._bridge_process_is_alive(state):
+                if os.name == "nt" and not self._profile_browser_pids():
+                    return WhatsAppResult(
+                        False,
+                        "WhatsApp is not connected: the bridge helper is running but Noor's dedicated WhatsApp browser is not open.",
+                        {"process_id": state.get("process_id"), "bridge_state": "orphaned"},
+                    )
+                if self._recent_bridge_runtime_error(state):
+                    return WhatsAppResult(
+                        False,
+                        "WhatsApp is not connected: the dedicated bridge lost its browser session. Reopen the dedicated WhatsApp profile.",
+                        state,
+                    )
             return WhatsAppResult(False, "No dedicated WhatsApp bridge is running. Open the dedicated profile first.")
         self._clear_launch_marker()
         if bool(state.get("connected")):
@@ -237,17 +262,43 @@ class WhatsAppWebService:
             return None
         self._progress("WhatsApp", f"New direct message from {chat}. Checking reply rules...")
         self.capture_fingerprint(chat, message_hash, body)
-        rule_result = self._reply_for(body, WhatsAppRuleContext(event_type="message", chat_id=str(result.data.get("chat_id") or ""), chat_label=chat, now=now_local()))
+        context = WhatsAppRuleContext(event_type="message", chat_id=str(result.data.get("chat_id") or ""), chat_label=chat, now=now_local())
+        rule_result = self._reply_for(body, context)
         if not rule_result.matched:
-            self._record_auto_reply(chat, message_hash, "", "no-rule", "Ignored")
-            self.storage.log("info", "WhatsApp", "Unread direct message ignored because no WhatsApp rule matched.", {"chat": chat, "message_hash": message_hash})
-            self._progress("WhatsApp", "No WhatsApp rule matched; no reply sent.")
-            return WhatsAppResult(True, "No WhatsApp rule matched; no reply sent.", {"chat": chat, "source": "no-rule"})
+            rule_result = self._reply_for_unmatched(body, context)
+            if rule_result.ok and rule_result.reply:
+                send_payload = {"reply": rule_result.reply}
+                if result.data.get("chat_id"):
+                    send_payload["chat_id"] = str(result.data.get("chat_id") or "")
+                    send_payload["chat_label"] = chat
+                else:
+                    send_payload.update({"expected_chat": chat, "expected_message_hash": message_hash})
+                sent = self._request("send-reply", send_payload)
+                if not sent.ok:
+                    self._record_auto_reply(chat, message_hash, "", f"{rule_result.source}:send-error", "Blocked")
+                    self._escalate_whatsapp_gap(chat, "message", message_hash, "WhatsApp send failed", body, sent.error or sent.message)
+                    return sent
+                self._record_auto_reply(chat, message_hash, rule_result.reply, rule_result.source, "Sent")
+                self.storage.log("warning", "WhatsApp", "AI fallback auto reply sent to unmatched direct chat.", {"chat": chat, "message_hash": message_hash, "source": rule_result.source})
+                self._progress("WhatsApp", f"No rule matched; auto reply sent using {rule_result.source}.")
+                return WhatsAppResult(True, f"Auto reply sent using {rule_result.source}.", {"chat": chat, "source": rule_result.source})
+            self._record_auto_reply(chat, message_hash, "", rule_result.source or "no-rule-ai", "Blocked")
+            self.storage.log("warning", "WhatsApp", "Unmatched WhatsApp message could not be answered by Gemini/Codex.", {"chat": chat, "message_hash": message_hash, "source": rule_result.source, "error": rule_result.error})
+            teams = self._escalate_whatsapp_gap(chat, "message", message_hash, "Gemini/Codex requires Raihan or manager reply", body, rule_result.error)
+            self._progress("WhatsApp", "No WhatsApp rule matched; Gemini/Codex could not answer. Escalating to Teams.")
+            message = "No WhatsApp rule matched and AI fallback could not answer."
+            if teams.ok and not (teams.data or {}).get("duplicate"):
+                message += " Teams alert sent."
+            return WhatsAppResult(True, message, {"chat": chat, "source": rule_result.source, "teams": teams.ok}, rule_result.error)
         if not rule_result.ok or not rule_result.reply:
             self._record_auto_reply(chat, message_hash, "", rule_result.source or "rule-error", "Blocked")
             self.storage.log("warning", "WhatsApp", "Matched WhatsApp rule could not produce a reply.", {"chat": chat, "message_hash": message_hash, "source": rule_result.source, "error": rule_result.error})
+            teams = self._escalate_whatsapp_gap(chat, "message", message_hash, "matched WhatsApp rule failed", body, rule_result.error)
             self._progress("WhatsApp", f"Matched rule failed: {rule_result.error[:160]}")
-            return WhatsAppResult(False, "Matched WhatsApp rule could not produce a reply.", error=rule_result.error)
+            message = "Matched WhatsApp rule could not produce a reply."
+            if teams.ok and not (teams.data or {}).get("duplicate"):
+                message += " Teams alert sent."
+            return WhatsAppResult(False, message, {"chat": chat, "source": rule_result.source, "teams": teams.ok}, rule_result.error)
         reply, source = rule_result.reply, rule_result.source
         send_payload = {"reply": reply}
         if result.data.get("chat_id"):
@@ -259,6 +310,8 @@ class WhatsAppWebService:
             send_payload["media_path"] = rule_result.media_path
         sent = self._request("send-reply", send_payload)
         if not sent.ok:
+            self._record_auto_reply(chat, message_hash, "", f"{source}:send-error", "Blocked")
+            self._escalate_whatsapp_gap(chat, "message", message_hash, "WhatsApp send failed", body, sent.error or sent.message)
             return sent
         self._record_auto_reply(chat, message_hash, reply, source, "Sent")
         self.storage.log("warning", "WhatsApp", "Auto reply sent to unread direct chat.", {"chat": chat, "message_hash": message_hash, "source": source})
@@ -313,6 +366,7 @@ class WhatsAppWebService:
             "poll_seconds": 12,
             "skip_groups": True,
             "fallback_scan_enabled": True,
+            "ai_fallback_for_unmatched": True,
             "activity_baseline_ready": False,
             "activity_baseline_hashes": [],
         }
@@ -648,12 +702,12 @@ class WhatsAppWebService:
         if action_type in {"ai", "research", "gemini", "codex"}:
             provider = str(action.get("provider") or ("auto" if action_type == "ai" else action_type))
             label = {"auto": "Noor AI", "research": "Research", "gemini": "Gemini", "codex": "Codex"}.get(provider, provider.title())
-            self._progress(label, f"Preparing WhatsApp reply for {context.chat_label or 'direct chat'}...")
-            result = AIResponseService(self.storage, PROJECT_ROOT).answer_with_provider(provider, prompt, channel="whatsapp")
+            self._progress(label, f"Preparing WhatsApp reply for {context.chat_label or 'direct chat'}...", "progress")
+            result = AIResponseService(self.storage, PROJECT_ROOT, self._progress).answer_with_provider(provider, prompt, channel="whatsapp")
             if result.ok:
                 self._progress(label, f"AI reply ready via {result.source or provider}.")
             else:
-                self._progress(label, f"AI reply failed: {result.error[:160]}")
+                self._progress(label, f"AI reply failed: {result.error[:160]}", "error")
             return WhatsAppRuleResult(True, result.ok, result.text, f"{source}:{result.source or provider}", result.error)
 
         if action_type in {"tool", "safe_tool"}:
@@ -670,7 +724,7 @@ class WhatsAppWebService:
             self._progress("Reports", f"Building {report_type} employee report for {context.chat_label or 'WhatsApp'}...")
             from standalone_assistant.core.employee_reports import EmployeeReportService
 
-            report = EmployeeReportService().generate_report(report_type, now=context.now)
+            report = EmployeeReportService(storage=self.storage).generate_report(report_type, now=context.now)
             if not report.ok:
                 self._progress("Reports", f"Employee report failed: {report.error[:160]}")
                 return WhatsAppRuleResult(True, False, source=source, error=report.error)
@@ -708,7 +762,7 @@ class WhatsAppWebService:
                 match,
                 context,
             )
-            ai = AIResponseService(self.storage, PROJECT_ROOT).answer_with_provider(str(action.get("summarize_with")), prompt, channel="whatsapp", context=output)
+            ai = AIResponseService(self.storage, PROJECT_ROOT, self._progress).answer_with_provider(str(action.get("summarize_with")), prompt, channel="whatsapp", context=output)
             if ai.ok:
                 return WhatsAppRuleResult(True, True, ai.text, f"rule:{rule_id}:tool:{ai.source}")
         if action.get("reply_template"):
@@ -717,6 +771,30 @@ class WhatsAppWebService:
             prefix = "Tool command completed." if result.ok else "Tool command failed."
             reply = f"{prefix} {output}"
         return WhatsAppRuleResult(True, bool(reply.strip()), reply[:1200].strip(), f"rule:{rule_id}:tool", "" if result.ok else result.stderr)
+
+    def _reply_for_unmatched(self, message: str, context: WhatsAppRuleContext) -> WhatsAppRuleResult:
+        if context.event_type != "message":
+            return WhatsAppRuleResult(
+                True,
+                False,
+                source=f"no-rule:{context.event_type or 'event'}",
+                error="No matching WhatsApp call rule; Teams notice required.",
+            )
+        auto = self.auto_settings()
+        if not bool(auto.get("ai_fallback_for_unmatched", True)):
+            return WhatsAppRuleResult(False, False, source="no-rule", error="AI fallback for unmatched WhatsApp messages is disabled.")
+        self._progress("Gemini", f"No WhatsApp rule matched for {context.chat_label or 'direct chat'}; asking Gemini first...", "progress")
+        result = AIResponseService(self.storage, PROJECT_ROOT, self._progress).answer_whatsapp_unmatched(
+            message,
+            chat_label=context.chat_label,
+            event_type=context.event_type,
+        )
+        if result.ok and result.text.strip():
+            self._progress("WhatsApp", f"AI fallback reply ready via {result.source or 'AI'}.")
+            return WhatsAppRuleResult(True, True, result.text.strip()[:1200], f"unmatched:{result.source or 'ai'}")
+        reason = result.handoff_reason or result.error or "Gemini/Codex did not return a usable answer."
+        self._progress("Teams", f"AI fallback needs Raihan/manager reply: {reason[:160]}", "attention")
+        return WhatsAppRuleResult(True, False, source=f"unmatched:{result.source or 'ai'}", error=reason)
 
     @staticmethod
     def _render_rule_template(
@@ -827,23 +905,58 @@ class WhatsAppWebService:
         context = WhatsAppRuleContext(event_type=event_type, event_subtype=event_subtype, chat_id=chat_id, chat_label=chat_label, now=now_local())
         rule_result = self._reply_for(body, context)
         if not rule_result.matched:
-            self._record_auto_reply(chat_key, event_id, "", "no-rule", "Ignored")
+            if event_type == "call":
+                self._record_auto_reply(chat_key, event_id, "", "no-rule:call", "Blocked")
+                event_path.unlink(missing_ok=True)
+                self.storage.log("warning", "WhatsApp", "Unmatched WhatsApp call escalated to Teams without AI fallback.", {"message_hash": event_id, "chat_label": chat_label})
+                teams = self._escalate_whatsapp_gap(chat_label, event_type, event_id, "unmatched WhatsApp call", body, "No matching call rule.")
+                self._progress("WhatsApp", "No WhatsApp call rule matched. Escalating to Teams without Gemini/Codex.")
+                message = "No WhatsApp call rule matched."
+                if teams.ok and not (teams.data or {}).get("duplicate"):
+                    message += " Teams alert sent."
+                return WhatsAppResult(True, message, {"source": "no-rule:call", "teams": teams.ok}, "No matching call rule.")
+            rule_result = self._reply_for_unmatched(body, context)
+            if rule_result.ok and rule_result.reply:
+                send_payload = {"chat_id": chat_id, "chat_label": chat_label, "reply": rule_result.reply}
+                sent = self._request("send-reply", send_payload)
+                if not sent.ok:
+                    self._record_auto_reply(chat_key, event_id, "", f"{rule_result.source}:send-error", "Blocked")
+                    event_path.unlink(missing_ok=True)
+                    self._escalate_whatsapp_gap(chat_label, event_type, event_id, "WhatsApp send failed", body, sent.error or sent.message)
+                    return sent
+                self._record_auto_reply(chat_key, event_id, rule_result.reply, rule_result.source, "Sent")
+                event_path.unlink(missing_ok=True)
+                self.storage.log("warning", "WhatsApp", "AI fallback auto reply sent through whatsapp-web.js.", {"message_hash": event_id, "source": rule_result.source})
+                self._progress("WhatsApp", f"No rule matched; auto reply sent using {rule_result.source}.")
+                return WhatsAppResult(True, f"Auto reply sent using {rule_result.source}.", {"source": rule_result.source})
+            self._record_auto_reply(chat_key, event_id, "", rule_result.source or "no-rule-ai", "Blocked")
             event_path.unlink(missing_ok=True)
-            self.storage.log("info", "WhatsApp", "WhatsApp event ignored because no rule matched.", {"message_hash": event_id})
-            self._progress("WhatsApp", "No WhatsApp rule matched; no reply sent.")
-            return WhatsAppResult(True, "No WhatsApp rule matched; no reply sent.", {"source": "no-rule"})
+            self.storage.log("warning", "WhatsApp", "WhatsApp event could not be answered by Gemini/Codex.", {"message_hash": event_id, "source": rule_result.source, "error": rule_result.error})
+            teams = self._escalate_whatsapp_gap(chat_label, event_type, event_id, "Gemini/Codex requires Raihan or manager reply", body, rule_result.error)
+            self._progress("WhatsApp", "No WhatsApp rule matched; Gemini/Codex could not answer. Escalating to Teams.")
+            message = "No WhatsApp rule matched and AI fallback could not answer."
+            if teams.ok and not (teams.data or {}).get("duplicate"):
+                message += " Teams alert sent."
+            return WhatsAppResult(True, message, {"source": rule_result.source, "teams": teams.ok}, rule_result.error)
         if not rule_result.ok or not rule_result.reply:
             self._record_auto_reply(chat_key, event_id, "", rule_result.source or "rule-error", "Blocked")
             event_path.unlink(missing_ok=True)
             self.storage.log("warning", "WhatsApp", "Matched WhatsApp event rule could not produce a reply.", {"message_hash": event_id, "source": rule_result.source, "error": rule_result.error})
+            teams = self._escalate_whatsapp_gap(chat_label, event_type, event_id, "matched WhatsApp rule failed", body, rule_result.error)
             self._progress("WhatsApp", f"Matched rule failed: {rule_result.error[:160]}")
-            return WhatsAppResult(False, "Matched WhatsApp rule could not produce a reply.", error=rule_result.error)
+            message = "Matched WhatsApp rule could not produce a reply."
+            if teams.ok and not (teams.data or {}).get("duplicate"):
+                message += " Teams alert sent."
+            return WhatsAppResult(False, message, {"source": rule_result.source, "teams": teams.ok}, rule_result.error)
         reply, source = rule_result.reply, rule_result.source
         send_payload = {"chat_id": chat_id, "chat_label": chat_label, "reply": reply}
         if rule_result.media_path:
             send_payload["media_path"] = rule_result.media_path
         sent = self._request("send-reply", send_payload)
         if not sent.ok:
+            self._record_auto_reply(chat_key, event_id, "", f"{source}:send-error", "Blocked")
+            event_path.unlink(missing_ok=True)
+            self._escalate_whatsapp_gap(chat_label, event_type, event_id, "WhatsApp send failed", body, sent.error or sent.message)
             return sent
         self._record_auto_reply(chat_key, event_id, reply, source, "Sent")
         event_path.unlink(missing_ok=True)
@@ -886,6 +999,29 @@ class WhatsAppWebService:
             {"message": result.message, "error": result.error[:240]},
         )
 
+    def _escalate_whatsapp_gap(
+        self,
+        chat_label: str,
+        event_type: str,
+        message_hash: str,
+        reason: str,
+        body: str = "",
+        error: str = "",
+    ) -> TeamsAlertResult:
+        result = TeamsAlertService(self.storage).escalate_whatsapp_gap(
+            chat_label=chat_label,
+            event_type=event_type,
+            message_hash=message_hash,
+            reason=reason,
+            body=body,
+            error=error,
+        )
+        if result.ok and not (result.data or {}).get("duplicate"):
+            self._progress("Teams", "Teams fallback alert sent.")
+        elif result.error:
+            self._progress("Teams", f"Teams fallback failed: {result.error[:160]}", "error")
+        return result
+
     @staticmethod
     def _same_chat(left: str, right: str) -> bool:
         return bool(left.strip() and right.strip() and left.strip().casefold() == right.strip().casefold())
@@ -903,13 +1039,26 @@ class WhatsAppWebService:
             return value if isinstance(value, dict) else None
         return None
 
-    @staticmethod
-    def _bridge_is_live(state: dict[str, Any]) -> bool:
+    @classmethod
+    def _bridge_is_live(cls, state: dict[str, Any]) -> bool:
         try:
-            process_id = int(state.get("process_id"))
             updated_at = float(state.get("updated_at"))
             # Browser actions may take several seconds while WhatsApp animates or filters chats.
             if time.time() - updated_at > 60:
+                return False
+        except (TypeError, ValueError):
+            return False
+        if not cls._bridge_process_is_alive(state):
+            return False
+        if os.name == "nt" and not cls._profile_browser_pids():
+            return False
+        return not cls._recent_bridge_runtime_error(state)
+
+    @staticmethod
+    def _bridge_process_is_alive(state: dict[str, Any]) -> bool:
+        try:
+            process_id = int(state.get("process_id"))
+            if process_id <= 0:
                 return False
             if os.name == "nt":
                 check = subprocess.run(
@@ -920,13 +1069,119 @@ class WhatsAppWebService:
                     check=False,
                     **hidden_subprocess_kwargs(),
                 )
-                if str(process_id) not in check.stdout:
-                    return False
-            else:
-                os.kill(process_id, 0)
+                return str(process_id) in check.stdout
+            os.kill(process_id, 0)
+            return True
         except (OSError, subprocess.TimeoutExpired, TypeError, ValueError):
             return False
-        return True
+
+    def _stop_orphaned_bridge(self, state: dict[str, Any]) -> WhatsAppResult:
+        try:
+            process_id = int(state.get("process_id"))
+        except (TypeError, ValueError):
+            return WhatsAppResult(False, "Noor found a stale WhatsApp bridge state, but it did not contain a valid process ID.")
+        command_line = self._bridge_process_command_line(process_id)
+        if os.name == "nt" and not command_line:
+            return WhatsAppResult(
+                False,
+                "Noor found a stale WhatsApp helper, but Windows did not return its command line. I will not close it automatically.",
+                {"process_id": process_id, "bridge_state": "orphaned"},
+            )
+        if command_line and not self._is_own_bridge_command(command_line):
+            return WhatsAppResult(
+                False,
+                "Noor found a stale WhatsApp helper, but the process no longer looks like Noor's bridge. I will not close it automatically.",
+                {"process_id": process_id, "bridge_state": "orphaned"},
+            )
+        if os.name == "nt":
+            try:
+                stopped = subprocess.run(
+                    ["taskkill", "/PID", str(process_id), "/T", "/F"],
+                    capture_output=True,
+                    text=True,
+                    timeout=6,
+                    check=False,
+                    **hidden_subprocess_kwargs(),
+                )
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                return WhatsAppResult(False, "Could not close Noor's stale WhatsApp helper.", error=str(exc))
+            if stopped.returncode != 0 and self._bridge_process_is_alive(state):
+                return WhatsAppResult(False, "Could not close Noor's stale WhatsApp helper.", error=(stopped.stderr or stopped.stdout).strip())
+        else:
+            try:
+                os.kill(process_id, signal.SIGTERM)
+            except OSError as exc:
+                if self._bridge_process_is_alive(state):
+                    return WhatsAppResult(False, "Could not close Noor's stale WhatsApp helper.", error=str(exc))
+            deadline = time.monotonic() + 4
+            while time.monotonic() < deadline and self._bridge_process_is_alive(state):
+                time.sleep(0.1)
+        self._clear_bridge_runtime_files()
+        self.storage.log("warning", "WhatsApp", "Closed stale orphaned WhatsApp bridge helper.", {"process_id": process_id})
+        return WhatsAppResult(True, "Closed stale WhatsApp helper.", {"process_id": process_id, "bridge_state": "cleared"})
+
+    @staticmethod
+    def _bridge_process_command_line(process_id: int) -> str:
+        if os.name == "nt":
+            try:
+                completed = subprocess.run(
+                    [
+                        "powershell",
+                        "-NoProfile",
+                        "-WindowStyle",
+                        "Hidden",
+                        "-Command",
+                        f"(Get-CimInstance Win32_Process -Filter \"ProcessId={process_id}\").CommandLine",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                    check=False,
+                    **hidden_subprocess_kwargs(),
+                )
+            except (OSError, subprocess.TimeoutExpired):
+                return ""
+            return completed.stdout.strip()
+        try:
+            return Path(f"/proc/{process_id}/cmdline").read_text(encoding="utf-8", errors="ignore").replace("\x00", " ")
+        except OSError:
+            return ""
+
+    @staticmethod
+    def _is_own_bridge_command(command_line: str) -> bool:
+        normalized = command_line.replace('"', "").casefold()
+        script = str(SCRIPTS_DIR / "whatsapp_webjs_bridge.js").casefold()
+        state_dir = str(WHATSAPP_BRIDGE_STATUS.parent).casefold()
+        auth_dir = str(WHATSAPP_WEBJS_AUTH_DIR).casefold()
+        return script in normalized and state_dir in normalized and auth_dir in normalized
+
+    @staticmethod
+    def _recent_bridge_runtime_error(state: dict[str, Any]) -> bool:
+        diagnostics = state.get("diagnostics")
+        if not isinstance(diagnostics, dict):
+            return False
+        reason = str(diagnostics.get("last_ignored_reason") or "")
+        if not reason:
+            return False
+        lowered = reason.casefold()
+        fatal_fragments = (
+            "detached frame",
+            "target closed",
+            "browser has disconnected",
+            "execution context was destroyed",
+            "protocol error",
+            "session closed",
+        )
+        if not any(fragment in lowered for fragment in fatal_fragments):
+            return False
+        latest = str(diagnostics.get("last_unread_scan_at") or diagnostics.get("last_call_poll_at") or diagnostics.get("last_incoming_at") or "")
+        if not latest:
+            return True
+        try:
+            checked_at = datetime.fromisoformat(latest.replace("Z", "+00:00"))
+        except ValueError:
+            return True
+        return datetime.now(timezone.utc) - checked_at < timedelta(minutes=5)
 
     @staticmethod
     def _launch_marker_is_fresh(state: dict[str, Any]) -> bool:
@@ -941,6 +1196,15 @@ class WhatsAppWebService:
             WHATSAPP_BRIDGE_STARTING.unlink(missing_ok=True)
         except OSError:
             pass
+
+    @staticmethod
+    def _clear_bridge_runtime_files() -> None:
+        for path in (WHATSAPP_BRIDGE_STATUS, WHATSAPP_BRIDGE_RESPONSE):
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        WhatsAppWebService._clear_launch_marker()
 
     @staticmethod
     def _profile_browser_pids() -> list[int]:
