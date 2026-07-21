@@ -35,26 +35,69 @@ let diagnostics = {
   ignored_events: 0,
   last_incoming_at: '',
   last_incoming_hash: '',
+  last_incoming_type: '',
+  last_incoming_chat_id: '',
   last_ignored_reason: '',
   last_request_action: '',
   last_response_message: '',
   last_unread_scan_at: '',
   last_unread_count: 0,
+  last_call_at: '',
+  last_call_chat_id: '',
+  last_call_origin: '',
+  last_call_poll_at: '',
+  last_call_poll_count: 0,
+  last_call_snapshot: {},
   active_request_id: '',
   active_request_age_ms: 0,
 };
+const seenCallEvents = new Set();
+let callPollInFlight = false;
 
 function serializedId(value) {
   if (!value) return '';
-  if (typeof value === 'string') return value;
+  if (typeof value === 'string' || typeof value === 'number') return String(value);
   if (typeof value._serialized === 'string') return value._serialized;
   if (value.id) return serializedId(value.id);
   return String(value);
 }
 
-function directChatId(value) {
-  const chatId = serializedId(value);
-  return (chatId.endsWith('@c.us') || chatId.endsWith('@lid')) ? chatId : '';
+function normalizeDirectChatId(rawValue, allowBareNumber = false) {
+  const value = serializedId(rawValue).trim();
+  if (!value || value.endsWith('@g.us') || value === 'status@broadcast' || value.endsWith('@broadcast')) return '';
+  if (value.endsWith('@c.us') || value.endsWith('@lid')) return value;
+  if (value.endsWith('@s.whatsapp.net')) {
+    const number = value.slice(0, -'@s.whatsapp.net'.length);
+    return number ? `${number}@c.us` : '';
+  }
+  const digits = digitsOnly(value);
+  return allowBareNumber && digits.length >= 8 && /^[+\d\s().-]+$/.test(value) ? `${digits}@c.us` : '';
+}
+
+function directChatId(value, options = {}) {
+  const allowBareNumber = Boolean(options.allowBareNumber);
+  const candidates = [];
+  if (typeof value === 'string' || typeof value === 'number') {
+    candidates.push(value);
+  } else if (value && typeof value === 'object') {
+    candidates.push(
+      value._serialized,
+      value.peerJid,
+      value.from,
+      value.chatId,
+      value.remote,
+      value.participant,
+      value.id && value.id._serialized,
+      value.id && value.id.remote,
+      value.id && value.id.participant,
+    );
+    if (value.user && value.server) candidates.push(`${value.user}@${value.server}`);
+  }
+  for (const candidate of candidates) {
+    const chatId = normalizeDirectChatId(candidate, allowBareNumber);
+    if (chatId) return chatId;
+  }
+  return '';
 }
 
 function digitsOnly(value) {
@@ -72,6 +115,36 @@ function chatTitle(chat) {
 function messageHash(message) {
   const messageId = serializedId(message.id) || `${serializedId(message.from)}-${message.timestamp || Date.now()}`;
   return crypto.createHash('sha256').update(`${messageId}\n${message.body || ''}`).digest('hex');
+}
+
+function callSnapshot(call, origin, chatId) {
+  return {
+    origin,
+    id: serializedId(call && call.id),
+    from: serializedId(call && call.from),
+    peerJid: serializedId(call && call.peerJid),
+    chatId,
+    timestamp: Number((call && (call.timestamp || call.offerTime)) || 0),
+    isVideo: Boolean(call && call.isVideo),
+    isGroup: Boolean(call && call.isGroup),
+    outgoing: Boolean(call && (call.outgoing || call.fromMe)),
+  };
+}
+
+function callEventKey(call, chatId) {
+  const stableId = serializedId(call && call.id) || String((call && (call.timestamp || call.offerTime)) || Math.floor(Date.now() / 10000));
+  return crypto.createHash('sha256').update(`call\n${chatId}\n${stableId}\n${Boolean(call && call.isVideo) ? 'video' : 'voice'}`).digest('hex');
+}
+
+function rememberCallEvent(eventKey) {
+  if (!eventKey) return false;
+  if (seenCallEvents.has(eventKey)) return false;
+  seenCallEvents.add(eventKey);
+  if (seenCallEvents.size > 200) {
+    const first = seenCallEvents.values().next().value;
+    seenCallEvents.delete(first);
+  }
+  return true;
 }
 
 function writeJson(filePath, value) {
@@ -127,16 +200,17 @@ client.on('change_state', (state) => {
   if (connectionState === 'CONNECTED') connected = true;
 });
 function writeIncomingEvent(message, fallback = {}) {
-  diagnostics.message_events += 1;
   const eventType = String(fallback.eventType || 'message');
   if (eventType === 'call') diagnostics.call_events += 1;
+  else diagnostics.message_events += 1;
   if (eventType !== 'call' && message.fromMe) {
     diagnostics.ignored_events += 1;
     diagnostics.last_ignored_reason = 'from_me';
     writeStatus();
     return;
   }
-  const chatId = String(fallback.chatId || serializedId(message.from) || '');
+  const rawChatId = String(fallback.chatId || serializedId(message.from) || '');
+  const chatId = directChatId(fallback.chatId) || directChatId(message.from) || rawChatId;
   if (!chatId || chatId.endsWith('@g.us') || fallback.isGroup) {
     diagnostics.ignored_events += 1;
     diagnostics.last_ignored_reason = chatId ? 'group_chat' : 'missing_chat_id';
@@ -171,25 +245,103 @@ function writeIncomingEvent(message, fallback = {}) {
   diagnostics.incoming_events += 1;
   diagnostics.last_incoming_at = new Date().toISOString();
   diagnostics.last_incoming_hash = eventId;
+  diagnostics.last_incoming_type = eventType;
+  diagnostics.last_incoming_chat_id = chatId;
   diagnostics.last_ignored_reason = '';
   writeStatus();
 }
 
 client.on('message', writeIncomingEvent);
 client.on('message_create', writeIncomingEvent);
-client.on('call', (call) => {
-  const chatId = directChatId(call && call.from);
+async function chatLabelForDirectChat(chatId) {
+  if (!chatId) return 'Direct contact';
+  try {
+    const contact = await promiseTimeout(client.getContactById(chatId), 4000, 'WhatsApp call contact lookup');
+    return String((contact && (contact.pushname || contact.name || contact.number)) || chatId);
+  } catch (error) {
+    return chatId;
+  }
+}
+
+async function writeCallEvent(call, origin = 'event') {
+  const chatId = directChatId(call, { allowBareNumber: true });
+  diagnostics.last_call_at = new Date().toISOString();
+  diagnostics.last_call_chat_id = chatId;
+  diagnostics.last_call_origin = origin;
+  diagnostics.last_call_snapshot = callSnapshot(call, origin, chatId);
+  if (call && (call.outgoing || call.fromMe)) {
+    diagnostics.call_events += 1;
+    diagnostics.ignored_events += 1;
+    diagnostics.last_ignored_reason = 'outgoing_call';
+    writeStatus();
+    return;
+  }
+  const eventKey = callEventKey(call, chatId);
+  if (!rememberCallEvent(eventKey)) {
+    writeStatus();
+    return;
+  }
+  const chatLabel = await chatLabelForDirectChat(chatId);
   writeIncomingEvent(
     {
-      id: { _serialized: `call-${chatId}-${call && (call.id || call.timestamp) || Date.now()}` },
+      id: { _serialized: `call-${eventKey}` },
       from: chatId,
       fromMe: false,
       body: 'Incoming WhatsApp call',
-      timestamp: Date.now(),
+      timestamp: Number((call && (call.timestamp || call.offerTime)) || Date.now()),
     },
-    { eventType: 'call', eventSubtype: 'incoming', chatId, chatLabel: 'Direct contact', body: 'Incoming WhatsApp call' },
+    { eventType: 'call', eventSubtype: 'incoming', chatId, chatLabel, body: 'Incoming WhatsApp call', isGroup: Boolean(call && call.isGroup) },
   );
+}
+
+client.on('call', (call) => {
+  writeCallEvent(call, 'event').catch((error) => {
+    diagnostics.ignored_events += 1;
+    diagnostics.last_ignored_reason = `call_event_failed:${String(error.message || error).slice(0, 80)}`;
+    writeStatus();
+  });
 });
+
+async function pollActiveCalls() {
+  if (!connected || callPollInFlight || !client.pupPage) return;
+  callPollInFlight = true;
+  try {
+    const calls = await client.pupPage.evaluate(() => {
+      try {
+        const collection = window.require && window.require('WAWebCallCollection');
+        const mapKey = collection && Object.keys(collection).find((key) => collection[key] instanceof Map);
+        const callMap = mapKey ? collection[mapKey] : null;
+        if (!callMap || typeof callMap.values !== 'function') return [];
+        return Array.from(callMap.values()).slice(-8).map((value) => ({
+          id: value && value.id,
+          peerJid: value && (value.peerJid || value.from),
+          from: value && (value.from || value.peerJid),
+          offerTime: value && (value.offerTime || value.timestamp),
+          isVideo: Boolean(value && value.isVideo),
+          isGroup: Boolean(value && value.isGroup),
+          outgoing: Boolean(value && value.outgoing),
+          canHandleLocally: Boolean(value && value.canHandleLocally),
+          webClientShouldHandle: Boolean(value && value.webClientShouldHandle),
+        }));
+      } catch (error) {
+        return { error: String(error && (error.message || error)).slice(0, 120) };
+      }
+    });
+    diagnostics.last_call_poll_at = new Date().toISOString();
+    if (!Array.isArray(calls)) {
+      diagnostics.last_ignored_reason = `call_poll_read_failed:${String(calls && calls.error || '').slice(0, 80)}`;
+      writeStatus();
+      return;
+    }
+    diagnostics.last_call_poll_count = calls.length;
+    for (const call of calls) await writeCallEvent(call, 'poll');
+  } catch (error) {
+    diagnostics.last_ignored_reason = `call_poll_failed:${String(error.message || error).slice(0, 80)}`;
+    writeStatus();
+  } finally {
+    callPollInFlight = false;
+  }
+}
 
 async function promiseTimeout(promise, milliseconds, label) {
   let timer;
@@ -430,5 +582,9 @@ setInterval(async () => {
     // A request can be replaced while it is read. The next bridge tick retries it.
   }
 }, 500);
+
+setInterval(() => {
+  pollActiveCalls();
+}, 1000);
 
 client.initialize();

@@ -3168,7 +3168,9 @@ class MainWindow(QMainWindow):
         incoming_hash = str(diagnostics.get("last_incoming_hash") or "")
         if incoming_hash and incoming_hash != self.last_whatsapp_incoming_hash:
             self.last_whatsapp_incoming_hash = incoming_hash
-            self.show_toast("WhatsApp", "New direct message detected. Noor is checking the reply rules.")
+            incoming_type = str(diagnostics.get("last_incoming_type") or "message").strip().lower()
+            event_name = "call" if incoming_type == "call" else "message"
+            self.show_toast("WhatsApp", f"New direct WhatsApp {event_name} detected. Noor is checking the reply rules.")
 
     def show_toast(self, title: str, message: str) -> None:
         if not hasattr(self, "toast_label"):
