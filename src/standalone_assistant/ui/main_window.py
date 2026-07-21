@@ -2673,7 +2673,7 @@ class SettingsPage(BasePage):
             {
                 "enabled": self.find_hub_enabled.isChecked(),
                 "url": str(find_phone.get("url") or "https://www.google.com/android/find/"),
-                "mode": "play_sound_only",
+                "mode": "auto_play_sound",
             }
         )
         voice = self.storage.get_setting("voice", {})

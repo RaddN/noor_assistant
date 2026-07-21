@@ -74,7 +74,7 @@ Assistant identity:
 - Upgraded `whatsapp-web.js` to `1.34.7`, bound it to the installed Google Chrome executable, and verified the dedicated event bridge reaches `CONNECTED` after QR authentication.
 - Confirmed Gemini CLI `0.51.0` and Codex CLI `0.128.0` are both detectable on this machine; answer generation remains gated by explicit commands/rules and Settings.
 - Replaced the selected `Khodeja Poly` test with direct-message auto replies for any unread contact: matching rules only, no WhatsApp cooldowns or hourly limits, group exclusion, duplicate protection, send-time chat/message verification, and audit records.
-- Added Find My Phone support through Google Find Hub in play-sound-only mode.
+- Added Find My Phone support through Google Find Hub with safe automatic `Play sound` automation for the configured phone.
 - Switched visible Noor timestamps to 12-hour AM/PM display.
 - Fixed launcher/startup stability:
   - `run_app.bat` now delegates to `run_noor_silent.vbs` instead of reinstalling dependencies on every launch;
@@ -154,7 +154,7 @@ Assistant identity:
 ## Not Started Yet
 
 - Microsoft Teams alert automation.
-- Google Find Hub manual device setup and play-sound-only automation.
+- Google Find Hub manual device setup for additional devices.
 - Real speech-to-action flows for arbitrary message composition.
 - Full browser-controlled research sessions with screenshots and page extraction.
 - Windows startup registration and system tray controls.
@@ -179,7 +179,7 @@ Assistant identity:
 - No browser profile, token, or credential is committed.
 - Employee report images are runtime output and ignored under `data\reports\`; private payroll, bank, NID, and personal-contact fields are excluded from WhatsApp report images.
 - WhatsApp automatic sending is limited to unread direct chats that match a local rule. Unmatched messages are ignored. It has duplicate protection, chat/message verification, group exclusion by default, and an audit trail.
-- Find My Phone opens Google Find Hub and stays play-sound-only; Google/browser device selection remains manual.
+- Find My Phone opens Google Find Hub and clicks only the configured device plus `Play sound`; lost/reset actions remain untouched and manual.
 - Voice uses local Windows speech APIs, not Gemini and not an AI model.
 
 ## Runtime Notes
