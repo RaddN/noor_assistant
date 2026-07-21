@@ -59,7 +59,22 @@ def rule_audience(rule: dict[str, Any]) -> dict[str, Any]:
     contacts = audience.get("contacts")
     if not isinstance(contacts, list):
         contacts = []
-    return {"scope": scope, "contacts": [str(item).strip() for item in contacts if str(item).strip()]}
+    aliases = audience.get("aliases") or audience.get("contact_aliases") or []
+    clean_aliases: list[dict[str, str]] = []
+    if isinstance(aliases, list):
+        for alias in aliases:
+            if isinstance(alias, dict):
+                label = str(alias.get("label") or alias.get("name") or alias.get("chat_label") or "").strip()
+                contact = str(alias.get("contact") or alias.get("phone") or alias.get("chat_id") or "").strip()
+            else:
+                raw = str(alias or "").strip()
+                if "=" in raw:
+                    label, contact = [item.strip() for item in raw.split("=", 1)]
+                else:
+                    label, contact = raw, ""
+            if label:
+                clean_aliases.append({"label": label, "contact": contact})
+    return {"scope": scope, "contacts": [str(item).strip() for item in contacts if str(item).strip()], "aliases": clean_aliases}
 
 
 def normalize_rule(rule: dict[str, Any]) -> dict[str, Any]:

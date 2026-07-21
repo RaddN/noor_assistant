@@ -525,14 +525,29 @@ class WhatsAppWebService:
         audience = rule_audience(rule)
         scope = audience["scope"]
         contacts = audience["contacts"]
+        aliases = audience.get("aliases") or []
         if scope == "everyone":
             return True
-        matched = any(self._contact_matches(contact, context) for contact in contacts)
+        matched = any(self._contact_matches(contact, context) for contact in contacts) or any(self._alias_matches(alias, context) for alias in aliases)
         if scope == "contacts":
             return matched
         if scope == "except_contacts":
             return not matched
         return True
+
+    @staticmethod
+    def _alias_matches(alias: Any, context: WhatsAppRuleContext) -> bool:
+        if not isinstance(alias, dict):
+            return False
+        label = str(alias.get("label") or "").strip().casefold()
+        contact = str(alias.get("contact") or "").strip()
+        chat_id = context.chat_id.strip().casefold()
+        chat_label = context.chat_label.strip().casefold()
+        if contact and WhatsAppWebService._contact_matches(contact, context):
+            return True
+        if not label:
+            return False
+        return label in {chat_id, chat_label} or bool(len(label) >= 3 and chat_label and (label in chat_label or chat_label in label))
 
     @staticmethod
     def _contact_matches(contact: str, context: WhatsAppRuleContext) -> bool:

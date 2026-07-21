@@ -37,6 +37,7 @@ let diagnostics = {
   last_incoming_hash: '',
   last_incoming_type: '',
   last_incoming_chat_id: '',
+  last_incoming_chat_label: '',
   last_ignored_reason: '',
   last_request_action: '',
   last_response_message: '',
@@ -47,12 +48,18 @@ let diagnostics = {
   last_call_origin: '',
   last_call_poll_at: '',
   last_call_poll_count: 0,
+  last_call_ui_at: '',
+  last_call_ui_label: '',
+  last_call_ui_type: '',
   last_call_snapshot: {},
   active_request_id: '',
   active_request_age_ms: 0,
 };
 const seenCallEvents = new Set();
 let callPollInFlight = false;
+let callUiPollInFlight = false;
+let activeUiCallKey = '';
+let activeUiCallStartedAt = 0;
 
 function serializedId(value) {
   if (!value) return '';
@@ -247,19 +254,20 @@ function writeIncomingEvent(message, fallback = {}) {
   diagnostics.last_incoming_hash = eventId;
   diagnostics.last_incoming_type = eventType;
   diagnostics.last_incoming_chat_id = chatId;
+  diagnostics.last_incoming_chat_label = String(fallback.chatLabel || 'Direct contact');
   diagnostics.last_ignored_reason = '';
   writeStatus();
 }
 
 client.on('message', writeIncomingEvent);
 client.on('message_create', writeIncomingEvent);
-async function chatLabelForDirectChat(chatId) {
-  if (!chatId) return 'Direct contact';
+async function chatLabelForDirectChat(chatId, fallbackLabel = 'Direct contact') {
+  if (!chatId) return fallbackLabel;
   try {
     const contact = await promiseTimeout(client.getContactById(chatId), 4000, 'WhatsApp call contact lookup');
-    return String((contact && (contact.pushname || contact.name || contact.number)) || chatId);
+    return String((contact && (contact.pushname || contact.name || contact.number)) || fallbackLabel || chatId);
   } catch (error) {
-    return chatId;
+    return String(fallbackLabel || chatId);
   }
 }
 
@@ -281,7 +289,8 @@ async function writeCallEvent(call, origin = 'event') {
     writeStatus();
     return;
   }
-  const chatLabel = await chatLabelForDirectChat(chatId);
+  const providedLabel = String(call && (call.chatLabel || call.label) || '').trim();
+  const chatLabel = providedLabel || await chatLabelForDirectChat(chatId);
   writeIncomingEvent(
     {
       id: { _serialized: `call-${eventKey}` },
@@ -340,6 +349,127 @@ async function pollActiveCalls() {
     writeStatus();
   } finally {
     callPollInFlight = false;
+  }
+}
+
+async function incomingCallUiPayload() {
+  if (!client.pupPage) return null;
+  const title = await client.pupPage.title().catch(() => '');
+  const dom = await client.pupPage.evaluate(() => {
+    function clean(value) {
+      return String(value || '').replace(/\s+/g, ' ').trim();
+    }
+    const applications = Array.from(document.querySelectorAll('[role="application"]'));
+    for (const app of applications) {
+      const text = String(app.innerText || app.textContent || '');
+      const buttons = Array.from(app.querySelectorAll('button,[role="button"]')).map((button) => clean(button.getAttribute('aria-label') || button.innerText || button.textContent));
+      const hasDecline = buttons.some((value) => /^decline$/i.test(value));
+      const hasAccept = buttons.some((value) => /^accept$/i.test(value));
+      if (!hasDecline || !hasAccept || !/\bcall\b/i.test(text)) continue;
+      const lines = text.split(/\r?\n/).map(clean).filter(Boolean);
+      const caller = lines.find((line) => !/^(voice call|video call|decline|accept|mute microphone)$/i.test(line)) || '';
+      const callType = lines.some((line) => /^video call$/i.test(line)) ? 'video' : 'voice';
+      return { caller, callType, text: clean(text).slice(0, 240) };
+    }
+    return null;
+  }).catch(() => null);
+  const match = String(title || '').match(/^Incoming\s+(voice|video)\s+call\s+from\s+(.+)$/i);
+  const caller = String((match && match[2]) || (dom && dom.caller) || '').trim();
+  if (!caller) return null;
+  return {
+    caller,
+    callType: String((match && match[1]) || (dom && dom.callType) || 'voice').toLowerCase(),
+    title,
+    text: String((dom && dom.text) || '').slice(0, 240),
+  };
+}
+
+async function directChatIdForChatLabel(label) {
+  const target = normalizedText(label);
+  if (!target || !client.pupPage) return '';
+  return client.pupPage.evaluate((expected) => {
+    function clean(value) {
+      return String(value || '').replace(/\s+/g, ' ').trim().toLowerCase();
+    }
+    function serialized(id) {
+      if (!id) return '';
+      if (typeof id === 'string') return id;
+      if (typeof id._serialized === 'string') return id._serialized;
+      if (id.user && id.server) return `${id.user}@${id.server}`;
+      return String(id || '');
+    }
+    try {
+      const collection = window.require && window.require('WAWebChatCollection');
+      const models = collection && collection.ChatCollection && collection.ChatCollection._models;
+      const chats = Array.from(models || []);
+      const exact = chats.find((chat) => {
+        if (!chat || chat.isGroup) return false;
+        const names = [
+          chat.name,
+          chat.formattedTitle,
+          chat.pushname,
+          chat.displayName,
+          chat.title,
+          chat.contact && chat.contact.name,
+          chat.contact && chat.contact.pushname,
+          chat.contact && chat.contact.shortName,
+          chat.contact && chat.contact.number,
+        ].map(clean).filter(Boolean);
+        return names.includes(expected);
+      });
+      return serialized(exact && exact.id);
+    } catch (error) {
+      return '';
+    }
+  }, target).catch(() => '');
+}
+
+async function pollIncomingCallUi() {
+  if (!connected || callUiPollInFlight || !client.pupPage) return;
+  callUiPollInFlight = true;
+  try {
+    const payload = await incomingCallUiPayload();
+    if (!payload) {
+      activeUiCallKey = '';
+      activeUiCallStartedAt = 0;
+      return;
+    }
+    diagnostics.last_call_ui_at = new Date().toISOString();
+    diagnostics.last_call_ui_label = payload.caller;
+    diagnostics.last_call_ui_type = payload.callType;
+    const uiKey = `${payload.callType}:${normalizedText(payload.caller)}`;
+    if (uiKey !== activeUiCallKey) {
+      activeUiCallKey = uiKey;
+      activeUiCallStartedAt = Date.now();
+    }
+    let chatId = await directChatIdForChatLabel(payload.caller);
+    if (!chatId) {
+      chatId = await resolveDirectChatId({ chat_label: payload.caller, expected_chat: payload.caller });
+    }
+    if (!chatId) {
+      diagnostics.ignored_events += 1;
+      diagnostics.last_ignored_reason = `call_ui_chat_not_resolved:${payload.caller.slice(0, 60)}`;
+      writeStatus();
+      return;
+    }
+    await writeCallEvent(
+      {
+        id: `ui-${activeUiCallStartedAt}`,
+        peerJid: chatId,
+        from: chatId,
+        timestamp: activeUiCallStartedAt,
+        isVideo: payload.callType === 'video',
+        isGroup: false,
+        outgoing: false,
+        chatLabel: payload.caller,
+      },
+      'ui',
+    );
+  } catch (error) {
+    diagnostics.last_ignored_reason = `call_ui_poll_failed:${String(error.message || error).slice(0, 80)}`;
+    writeStatus();
+  } finally {
+    callUiPollInFlight = false;
   }
 }
 
@@ -585,6 +715,7 @@ setInterval(async () => {
 
 setInterval(() => {
   pollActiveCalls();
+  pollIncomingCallUi();
 }, 1000);
 
 client.initialize();

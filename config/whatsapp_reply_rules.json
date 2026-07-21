@@ -291,6 +291,12 @@
       "contacts": [
         "01566085486",
         "01817970161"
+      ],
+      "aliases": [
+        {
+          "label": "My Teletalk",
+          "contact": "01566085486"
+        }
       ]
     },
     "triggers": [

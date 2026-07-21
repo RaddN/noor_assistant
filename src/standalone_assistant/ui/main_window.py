@@ -2173,12 +2173,23 @@ class WhatsAppRulesPage(BasePage):
         if any(rule["id"] == rule_id and rule_id != self.editor_rule_id for rule in rules):
             QMessageBox.warning(self, "WhatsApp Rule", "Another rule already uses this Rule ID.")
             return
+        preserved_aliases: list[Any] = []
+        for rule in rules:
+            if rule["id"] in {self.editor_rule_id, rule_id}:
+                audience = rule.get("audience") if isinstance(rule.get("audience"), dict) else {}
+                aliases = audience.get("aliases") or audience.get("contact_aliases") or []
+                if isinstance(aliases, list):
+                    preserved_aliases = aliases
+                break
+        audience_payload: dict[str, Any] = {"scope": scope, "contacts": contacts}
+        if preserved_aliases:
+            audience_payload["aliases"] = preserved_aliases
         new_rule: dict[str, Any] = {
             "id": rule_id,
             "name": name,
             "enabled": self.enabled_check.isChecked(),
             "trigger_logic": self.trigger_logic.currentData() or "any",
-            "audience": {"scope": scope, "contacts": contacts},
+            "audience": audience_payload,
             "triggers": self.current_triggers,
             "actions": self.current_actions,
         }
