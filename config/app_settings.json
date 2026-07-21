@@ -74,7 +74,8 @@
   "whatsapp_auto_reply": {
     "enabled": true,
     "poll_seconds": 12,
-    "skip_groups": true
+    "skip_groups": true,
+    "fallback_scan_enabled": true
   },
   "identity": {
     "name": "Noor",

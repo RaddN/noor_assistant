@@ -56,8 +56,11 @@ let diagnostics = {
   active_request_age_ms: 0,
 };
 const seenCallEvents = new Set();
+const seenIncomingEvents = new Set();
+const seenUnreadEvents = new Set();
 let callPollInFlight = false;
 let callUiPollInFlight = false;
+let unreadPollInFlight = false;
 let activeUiCallKey = '';
 let activeUiCallStartedAt = 0;
 
@@ -119,9 +122,24 @@ function chatTitle(chat) {
   return String(chat && (chat.name || chat.formattedTitle || chat.pushname || '') || '').trim();
 }
 
+function messageTimestamp(message) {
+  const value = Number(message && (message.timestamp || message.t || message.__x_t || message.__x_timestamp || 0));
+  return Number.isFinite(value) && value > 0 ? value : 0;
+}
+
 function messageHash(message) {
-  const messageId = serializedId(message.id) || `${serializedId(message.from)}-${message.timestamp || Date.now()}`;
-  return crypto.createHash('sha256').update(`${messageId}\n${message.body || ''}`).digest('hex');
+  const rawMessageId = serializedId(message.id);
+  const chatId = directChatId(message.from) || directChatId(message.to) || serializedId(message.from) || serializedId(message.to) || 'unknown-chat';
+  const body = String(message.body || '');
+  let stableMessageId = '';
+  if (rawMessageId) {
+    const parts = rawMessageId.split('_').filter(Boolean);
+    const suffix = parts.length > 1 ? parts[parts.length - 1] : rawMessageId;
+    stableMessageId = `${chatId}:${suffix || rawMessageId}`;
+  } else {
+    stableMessageId = `${chatId}:${messageTimestamp(message) || 'no-time'}:${body}`;
+  }
+  return crypto.createHash('sha256').update(`whatsapp-message\n${stableMessageId}\n${body}`).digest('hex');
 }
 
 function callSnapshot(call, origin, chatId) {
@@ -150,6 +168,28 @@ function rememberCallEvent(eventKey) {
   if (seenCallEvents.size > 200) {
     const first = seenCallEvents.values().next().value;
     seenCallEvents.delete(first);
+  }
+  return true;
+}
+
+function rememberUnreadEvent(eventKey) {
+  if (!eventKey) return false;
+  if (seenUnreadEvents.has(eventKey)) return false;
+  seenUnreadEvents.add(eventKey);
+  if (seenUnreadEvents.size > 500) {
+    const first = seenUnreadEvents.values().next().value;
+    seenUnreadEvents.delete(first);
+  }
+  return true;
+}
+
+function rememberIncomingEvent(eventKey) {
+  if (!eventKey) return false;
+  if (seenIncomingEvents.has(eventKey)) return false;
+  seenIncomingEvents.add(eventKey);
+  if (seenIncomingEvents.size > 1000) {
+    const first = seenIncomingEvents.values().next().value;
+    seenIncomingEvents.delete(first);
   }
   return true;
 }
@@ -233,6 +273,12 @@ function writeIncomingEvent(message, fallback = {}) {
   }
   const eventId = messageHash(message);
   const eventPath = path.join(incomingDir, `${eventId}.json`);
+  if (!rememberIncomingEvent(eventId)) {
+    diagnostics.ignored_events += 1;
+    diagnostics.last_ignored_reason = 'duplicate_event';
+    writeStatus();
+    return;
+  }
   if (fs.existsSync(eventPath)) {
     diagnostics.ignored_events += 1;
     diagnostics.last_ignored_reason = 'duplicate_event_file';
@@ -489,8 +535,9 @@ function readableIncomingMessages(messages) {
   return (messages || [])
     .filter((message) => message && !message.fromMe && String(message.body || '').trim())
     .map((message) => ({
-      id: serializedId(message.id) || `${serializedId(message.from)}-${message.timestamp || Date.now()}`,
+      id: serializedId(message.id),
       text: String(message.body || '').slice(0, 4000),
+      timestamp: messageTimestamp(message),
     }));
 }
 
@@ -521,7 +568,7 @@ async function writeUnreadChatEvent(chat) {
           from: chatId,
           fromMe: false,
           body: message.text,
-          timestamp: Date.now(),
+          timestamp: message.timestamp || 0,
         },
         { chatId, chatLabel: chat.name || chat.formattedTitle || 'Direct contact', isGroup: false },
       );
@@ -537,8 +584,157 @@ client.on('unread_count', (chat) => {
   writeUnreadChatEvent(chat);
 });
 
+async function internalUnreadPayload() {
+  if (!client.pupPage) return null;
+  return client.pupPage.evaluate(() => {
+    function clean(value) {
+      return String(value || '').replace(/\s+/g, ' ').trim();
+    }
+    function serialized(id) {
+      if (!id) return '';
+      if (typeof id === 'string') return id;
+      if (typeof id._serialized === 'string') return id._serialized;
+      if (id.user && id.server) return `${id.user}@${id.server}`;
+      return String(id || '');
+    }
+    function msgBody(message) {
+      return String(message && (message.body || message.caption || message.__x_body || message.__x_caption || '') || '').trim();
+    }
+    function msgId(message) {
+      return serialized(message && (message.id || message.__x_id));
+    }
+    function msgTimestamp(message) {
+      const value = Number(message && (message.timestamp || message.t || message.__x_t || message.__x_timestamp || 0));
+      return Number.isFinite(value) && value > 0 ? value : 0;
+    }
+    function msgType(message) {
+      return String(message && (message.type || message.__x_type || '') || '').toLowerCase();
+    }
+    function msgFromMe(message) {
+      return Boolean(message && (message.fromMe || message.__x_fromMe));
+    }
+    function chatTitle(chat) {
+      return clean(chat && (
+        chat.name ||
+        chat.formattedTitle ||
+        chat.pushname ||
+        chat.displayName ||
+        chat.title ||
+        (chat.contact && (chat.contact.name || chat.contact.pushname || chat.contact.shortName || chat.contact.number))
+      ));
+    }
+    try {
+      const collection = window.require && window.require('WAWebChatCollection');
+      const models = collection && collection.ChatCollection && collection.ChatCollection._models;
+      const chats = Array.from(models || []).filter((chat) => {
+        const chatId = serialized(chat && chat.id);
+        const unread = Number((chat && (chat.unreadCount || chat.__x_unreadCount)) || 0);
+        return chat && unread > 0 && !chat.isGroup && !chat.__x_isGroup && !chat.isReadOnly && !chat.__x_isReadOnly && (chatId.endsWith('@c.us') || chatId.endsWith('@lid'));
+      });
+      chats.sort((left, right) => Number((right && (right.t || right.__x_t)) || 0) - Number((left && (left.t || left.__x_t)) || 0));
+      for (const chat of chats) {
+        const chatId = serialized(chat.id);
+        const unreadCount = Math.max(1, Math.min(Number(chat.unreadCount || chat.__x_unreadCount || 1), 10));
+        const rawMessages = chat.msgs || chat.__x_msgs;
+        const messages = Array.isArray(rawMessages)
+          ? rawMessages
+          : Array.isArray(rawMessages && rawMessages._models)
+            ? rawMessages._models
+            : Array.isArray(rawMessages && rawMessages.models)
+              ? rawMessages.models
+              : [];
+        const incoming = messages
+          .slice(-unreadCount)
+          .map((message) => ({
+            id: msgId(message),
+            text: msgBody(message).slice(0, 4000),
+            type: msgType(message),
+            timestamp: msgTimestamp(message),
+            from_me: msgFromMe(message),
+          }))
+          .filter((message) => !message.from_me && message.id && !message.id.startsWith('true_') && message.text && (!message.type || message.type === 'chat'));
+        if (incoming.length) {
+          return {
+            has_unread: true,
+            chat: chatTitle(chat) || 'Direct contact',
+            chat_id: chatId,
+            is_group: false,
+            incoming_messages: incoming,
+          };
+        }
+      }
+      return { has_unread: false };
+    } catch (error) {
+      return { has_unread: false, error: String(error && (error.message || error)).slice(0, 120) };
+    }
+  }).catch((error) => ({ has_unread: false, error: String(error.message || error).slice(0, 120) }));
+}
+
+async function writeInternalUnreadEvent() {
+  if (!connected || unreadPollInFlight || !client.pupPage) return;
+  unreadPollInFlight = true;
+  try {
+    const payload = await internalUnreadPayload();
+    diagnostics.last_unread_scan_at = new Date().toISOString();
+    if (!payload || !payload.has_unread) {
+      diagnostics.last_unread_count = 0;
+      if (payload && payload.error) diagnostics.last_ignored_reason = `internal_unread_failed:${payload.error}`;
+      writeStatus();
+      return;
+    }
+    const messages = Array.isArray(payload.incoming_messages) ? payload.incoming_messages : [];
+    diagnostics.last_unread_count = messages.length;
+    const latest = messages[messages.length - 1];
+    if (!latest || !latest.id || !latest.text || !rememberUnreadEvent(`${payload.chat_id}:${latest.id}`)) {
+      writeStatus();
+      return;
+    }
+    writeIncomingEvent(
+      {
+        id: { _serialized: latest.id },
+        from: String(payload.chat_id || ''),
+        fromMe: false,
+        body: latest.text,
+        timestamp: Number(latest.timestamp || 0),
+      },
+      { chatId: String(payload.chat_id || ''), chatLabel: String(payload.chat || 'Direct contact'), isGroup: false },
+    );
+  } catch (error) {
+    diagnostics.ignored_events += 1;
+    diagnostics.last_ignored_reason = `internal_unread_event_failed:${String(error.message || error).slice(0, 100)}`;
+    writeStatus();
+  } finally {
+    unreadPollInFlight = false;
+  }
+}
+
 async function nextUnreadPayload() {
-  const chats = await promiseTimeout(client.getChats(), 10000, 'Unread WhatsApp chat scan');
+  let chats = [];
+  try {
+    chats = await promiseTimeout(client.getChats(), 10000, 'Unread WhatsApp chat scan');
+  } catch (error) {
+    const internal = await internalUnreadPayload();
+    if (internal && internal.has_unread) {
+      const incoming = (internal.incoming_messages || []).map((message) => ({
+        hash: messageHash({ id: { _serialized: message.id }, from: internal.chat_id, body: message.text, timestamp: Number(message.timestamp || 0) }),
+        text: message.text,
+      }));
+      diagnostics.last_unread_scan_at = new Date().toISOString();
+      diagnostics.last_unread_count = incoming.length;
+      return {
+        ok: true,
+        message: incoming.length ? 'Unread WhatsApp direct chat found.' : 'Unread chat had no readable incoming text.',
+        data: { ...internal, incoming_messages: incoming },
+        error: '',
+      };
+    }
+    if (internal && !internal.error) {
+      diagnostics.last_unread_scan_at = new Date().toISOString();
+      diagnostics.last_unread_count = 0;
+      return { ok: true, message: 'No unread WhatsApp direct chats found.', data: { has_unread: false }, error: '' };
+    }
+    throw error;
+  }
   const chat = chats.find((item) => {
     const chatId = serializedId(item.id);
     return !item.isGroup && !item.isReadOnly && Number(item.unreadCount || 0) > 0 && (chatId.endsWith('@c.us') || chatId.endsWith('@lid'));
@@ -550,7 +746,7 @@ async function nextUnreadPayload() {
   }
   const messages = await messagesForUnreadChat(chat);
   const incoming = messages.map((message) => ({
-    hash: crypto.createHash('sha256').update(`${message.id}\n${message.text}`).digest('hex'),
+    hash: messageHash({ id: { _serialized: message.id }, from: serializedId(chat.id), body: message.text, timestamp: Number(message.timestamp || 0) }),
     text: message.text,
   }));
   diagnostics.last_unread_scan_at = new Date().toISOString();
@@ -678,7 +874,12 @@ function handleRequest(request) {
         if (!chatId || !reply) {
           return { ok: false, message: 'Reply request failed chat verification.', data: {}, error: '' };
         }
-        await client.sendMessage(chatId, reply, { waitUntilMsgSent: true });
+        await client.sendMessage(chatId, reply, { waitUntilMsgSent: true, sendSeen: true });
+        try {
+          await client.sendSeen(chatId);
+        } catch (error) {
+          diagnostics.last_ignored_reason = `send_seen_failed:${String(error.message || error).slice(0, 80)}`;
+        }
         return { ok: true, message: 'Reply sent.', data: { chat: String(request.chat_label || 'Direct contact') }, error: '' };
       })(), 25000, 'WhatsApp reply send');
     }
@@ -716,6 +917,7 @@ setInterval(async () => {
 setInterval(() => {
   pollActiveCalls();
   pollIncomingCallUi();
+  writeInternalUnreadEvent();
 }, 1000);
 
 client.initialize();

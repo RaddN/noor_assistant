@@ -2709,7 +2709,7 @@ class SettingsPage(BasePage):
             "enabled": self.whatsapp_auto_enabled.isChecked(),
             "poll_seconds": self.whatsapp_auto_poll.value(),
             "skip_groups": self.whatsapp_skip_groups.isChecked(),
-            "fallback_scan_enabled": bool(existing_auto_reply.get("fallback_scan_enabled", False)),
+            "fallback_scan_enabled": bool(existing_auto_reply.get("fallback_scan_enabled", True)),
             "activity_baseline_ready": bool(existing_auto_reply.get("activity_baseline_ready", False)),
             "activity_baseline_hashes": existing_auto_reply.get("activity_baseline_hashes", []),
         }

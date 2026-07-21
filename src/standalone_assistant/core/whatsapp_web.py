@@ -309,7 +309,7 @@ class WhatsAppWebService:
             "enabled": True,
             "poll_seconds": 12,
             "skip_groups": True,
-            "fallback_scan_enabled": False,
+            "fallback_scan_enabled": True,
             "activity_baseline_ready": False,
             "activity_baseline_hashes": [],
         }
