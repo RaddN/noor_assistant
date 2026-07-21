@@ -52,6 +52,7 @@ from PySide6.QtWidgets import (
 from standalone_assistant.core.assistant_brain import AssistantBrain, AssistantReply
 from standalone_assistant.core.connectors import ToolRegistry
 from standalone_assistant.core.connections import connection_snapshot
+from standalone_assistant.core.find_phone import FindPhoneResult, FindPhoneService
 from standalone_assistant.core.google_productivity import GoogleProductivityService
 from standalone_assistant.core.paths import ICON_DIR, SESSION_DIR, ensure_runtime_dirs
 from standalone_assistant.core.project_scanner import build_codex_prompt, codex_status, find_agents, preflight_project
@@ -113,6 +114,11 @@ def compact_text(value: Any, limit: int = 120) -> str:
     if len(text) <= limit:
         return text
     return text[: max(0, limit - 3)].rstrip() + "..."
+
+
+def is_find_phone_command(text: str) -> bool:
+    lowered = text.strip().lower()
+    return any(phrase in lowered for phrase in ("find my phone", "ring my phone", "find phone", "locate my phone"))
 
 
 def set_table_rows(table: QTableWidget, headers: list[str], rows: list[list[Any]]) -> None:
@@ -383,6 +389,11 @@ class DashboardPage(BasePage):
     def run_command(self) -> None:
         text = self.command_input.text().strip()
         if not text:
+            return
+        if is_find_phone_command(text):
+            self.storage.log("info", "Assistant", f"User: {text}")
+            self.command_requested.emit(text)
+            self.command_input.clear()
             return
         reply = self.brain.answer(text)
         if reply.action:
@@ -2792,6 +2803,14 @@ class FloatingChatDialog(QDialog):
             return
         self.input.clear()
         self.history.append(f"<p><b>You</b><br>{html.escape(text)}</p>")
+        if is_find_phone_command(text):
+            pending = "I am trying to ring your phone now. Noor will stay responsive while Find Hub works."
+            self.history.append(f"<p><b>Noor</b><br>{html.escape(pending)}</p>")
+            self.storage.log("info", "Floating Chat", f"Q: {text}")
+            self.storage.log("info", "Floating Chat", f"A: {pending}")
+            self.command_requested.emit(text)
+            self.history.moveCursor(QTextCursor.End)
+            return
         reply = self.brain.answer(text)
         self.history.append(f"<p><b>Noor</b><br>{html.escape(reply.text)}</p>")
         self.storage.log("info", "Floating Chat", f"Q: {text}")
@@ -2807,6 +2826,7 @@ class MainWindow(QMainWindow):
     whatsapp_connection_finished = Signal(object)
     whatsapp_poll_finished = Signal(object, object)
     whatsapp_progress = Signal(str, str)
+    find_phone_finished = Signal(str, object)
 
     def __init__(self, storage: Storage) -> None:
         super().__init__()
@@ -2823,6 +2843,7 @@ class MainWindow(QMainWindow):
         self.sidebar_collapsed = False
         self.last_whatsapp_incoming_hash = ""
         self.whatsapp_connection_running = False
+        self.find_phone_running = False
         self.build_ui()
         self.apply_style()
         self.build_menu()
@@ -2830,6 +2851,7 @@ class MainWindow(QMainWindow):
         self.whatsapp_connection_finished.connect(self.handle_whatsapp_connection_finished)
         self.whatsapp_poll_finished.connect(self.handle_whatsapp_poll_finished)
         self.whatsapp_progress.connect(self.show_toast)
+        self.find_phone_finished.connect(self.handle_find_phone_finished)
         self.connection_timer = QTimer(self)
         self.connection_timer.timeout.connect(self.ensure_whatsapp_connection)
         self.connection_timer.start(30000)
@@ -2949,6 +2971,9 @@ class MainWindow(QMainWindow):
             return
         lowered = command.lower()
         response = ""
+        if is_find_phone_command(command):
+            self.start_find_phone(command)
+            return
         if "open assistant" in lowered or "open dashboard" in lowered:
             self.open_page("Assistant")
             response = "Assistant dashboard is open."
@@ -3023,6 +3048,45 @@ class MainWindow(QMainWindow):
             voice = self.storage.get_setting("voice", {})
             if voice.get("speak_confirmations", True):
                 self.speech.speak(response[:900])
+
+    def start_find_phone(self, command: str) -> None:
+        if self.find_phone_running:
+            response = "I am already trying to ring your phone."
+            self.statusBar().showMessage(response)
+            self.show_toast("Find My Phone", response)
+            self.show_assistant_response(command, response)
+            return
+        self.find_phone_running = True
+        response = "I am trying to ring your phone now. Noor will stay responsive while Find Hub works."
+        self.storage.log("info", "Assistant Command", f"Q: {command}")
+        self.storage.log("info", "Assistant Command", f"A: {response}")
+        self.statusBar().showMessage(response)
+        self.show_toast("Find My Phone", "Opening Find Hub and triggering Play sound...")
+        self.show_assistant_response(command, response)
+        threading.Thread(target=self._find_phone_worker, args=(command,), daemon=True).start()
+
+    def _find_phone_worker(self, command: str) -> None:
+        try:
+            result = FindPhoneService(self.storage).open_find_hub()
+        except Exception as exc:
+            result = FindPhoneResult(False, "Find My Phone failed unexpectedly.", error=str(exc))
+        self.find_phone_finished.emit(command, result)
+
+    def handle_find_phone_finished(self, command: str, result: FindPhoneResult) -> None:
+        self.find_phone_running = False
+        response = result.message if result.ok else f"{result.message} {result.error}".strip()
+        level = "warning" if result.ok else "error"
+        self.storage.log(level, "Assistant Command", f"Find My Phone result: {response}")
+        self.statusBar().showMessage(response)
+        self.refresh_current_page()
+        self.show_toast("Find My Phone", response)
+        self.show_assistant_response(command, response)
+        if hasattr(self, "floating_chat") and self.floating_chat.isVisible():
+            self.floating_chat.history.append(f"<p><b>Noor</b><br>{html.escape(response)}</p>")
+            self.floating_chat.history.moveCursor(QTextCursor.End)
+        voice = self.storage.get_setting("voice", {})
+        if voice.get("speak_confirmations", True):
+            self.speech.speak(response[:900])
 
     def show_assistant_response(self, heard: str, response: str, confidence: float | None = None) -> None:
         dashboard = self.pages[self.page_by_title.get("assistant", 0)]

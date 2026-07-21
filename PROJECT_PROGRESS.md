@@ -75,6 +75,7 @@ Assistant identity:
 - Confirmed Gemini CLI `0.51.0` and Codex CLI `0.128.0` are both detectable on this machine; answer generation remains gated by explicit commands/rules and Settings.
 - Replaced the selected `Khodeja Poly` test with direct-message auto replies for any unread contact: matching rules only, no WhatsApp cooldowns or hourly limits, group exclusion, duplicate protection, send-time chat/message verification, and audit records.
 - Added Find My Phone support through Google Find Hub with safe automatic `Play sound` automation for the configured phone.
+- Fixed Find My Phone UI timeouts by running the ring operation in the background and narrowing the Chrome automation to the active Find Hub window.
 - Switched visible Noor timestamps to 12-hour AM/PM display.
 - Fixed launcher/startup stability:
   - `run_app.bat` now delegates to `run_noor_silent.vbs` instead of reinstalling dependencies on every launch;

@@ -5,6 +5,7 @@ import subprocess
 import time
 import webbrowser
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from standalone_assistant.core.paths import PROJECT_ROOT, SCRIPTS_DIR
@@ -14,6 +15,10 @@ from standalone_assistant.core.storage import Storage
 
 FIND_HUB_URL = "https://www.google.com/android/find/"
 FIND_PHONE_SCRIPT = SCRIPTS_DIR / "find_phone_play_sound.ps1"
+CHROME_CANDIDATES = (
+    Path("C:/Program Files/Google/Chrome/Application/chrome.exe"),
+    Path("C:/Program Files (x86)/Google/Chrome/Application/chrome.exe"),
+)
 
 
 @dataclass
@@ -55,10 +60,9 @@ class FindPhoneService:
         if not bool(settings.get("enabled", True)):
             return FindPhoneResult(False, "Find My Phone is disabled in Settings.")
         url = str(settings.get("url") or FIND_HUB_URL)
-        try:
-            opened = webbrowser.open(url)
-        except Exception as exc:
-            return FindPhoneResult(False, "Could not open Google Find Hub.", url=url, error=str(exc))
+        opened, error = self.open_browser_window(url)
+        if error:
+            return FindPhoneResult(False, "Could not open Google Find Hub.", url=url, error=error)
         if not opened:
             return FindPhoneResult(False, "Windows did not accept the Find Hub browser launch.", url=url)
         time.sleep(max(1, int(settings.get("post_open_delay_seconds") or 3)))
@@ -66,6 +70,20 @@ class FindPhoneService:
             self.storage.log("warning", "Find My Phone", "Opened Google Find Hub.", {"mode": settings.get("mode", "open_only")})
             return FindPhoneResult(True, "Google Find Hub is open. Select Raihan Hossain's phone and use Play sound.", url=url)
         return self.play_sound(settings, url)
+
+    def open_browser_window(self, url: str) -> tuple[bool, str]:
+        for chrome_path in CHROME_CANDIDATES:
+            if not chrome_path.exists():
+                continue
+            try:
+                subprocess.Popen([str(chrome_path), "--new-window", url], cwd=PROJECT_ROOT)
+                return True, ""
+            except OSError as exc:
+                return False, str(exc)
+        try:
+            return bool(webbrowser.open(url)), ""
+        except Exception as exc:
+            return False, str(exc)
 
     def play_sound(self, settings: dict[str, Any], url: str) -> FindPhoneResult:
         if not FIND_PHONE_SCRIPT.exists():

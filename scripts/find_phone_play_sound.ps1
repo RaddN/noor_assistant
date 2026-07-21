@@ -38,22 +38,6 @@ function Find-ByControlTypeAndName {
     return $Root.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $condition)
 }
 
-function Find-FirstByNameLike {
-    param(
-        [System.Windows.Automation.AutomationElement]$Root,
-        [System.Windows.Automation.ControlType]$ControlType,
-        [string]$Pattern
-    )
-    $typeCondition = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty, $ControlType)
-    $items = $Root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $typeCondition)
-    foreach ($item in $items) {
-        if ($item.Current.Name -like $Pattern) {
-            return $item
-        }
-    }
-    return $null
-}
-
 function Invoke-SafeElement {
     param([System.Windows.Automation.AutomationElement]$Element)
     if ($null -eq $Element) {
@@ -93,12 +77,6 @@ function Find-FindHubWindow {
         if ($window.Current.Name -like "*Find Hub*") {
             return $window
         }
-        $findHubTab = Find-FirstByNameLike -Root $window -ControlType ([System.Windows.Automation.ControlType]::TabItem) -Pattern "Find Hub:*"
-        if ($null -ne $findHubTab) {
-            [void](Invoke-SafeElement -Element $findHubTab)
-            Start-Sleep -Milliseconds 700
-            return $window
-        }
     }
     return $null
 }
@@ -107,7 +85,7 @@ function Read-FindHubStatus {
     param([System.Windows.Automation.AutomationElement]$Root)
     $interesting = @("Device has stopped ringing", "Device is ringing", "Last seen just now", "Contacting device...")
     foreach ($text in $interesting) {
-        $element = Find-FirstByNameLike -Root $Root -ControlType ([System.Windows.Automation.ControlType]::Text) -Pattern $text
+        $element = Find-ByControlTypeAndName -Root $Root -ControlType ([System.Windows.Automation.ControlType]::Text) -Name $text
         if ($null -ne $element) {
             return $element.Current.Name
         }
@@ -142,7 +120,8 @@ while ((Get-Date) -lt $deadline) {
     if (-not [string]::IsNullOrWhiteSpace($DeviceName)) {
         $deviceButton = Find-ByControlTypeAndName -Root $selectedWindow -ControlType ([System.Windows.Automation.ControlType]::Button) -Name ("Device image " + $DeviceName)
     } else {
-        $deviceButton = Find-FirstByNameLike -Root $selectedWindow -ControlType ([System.Windows.Automation.ControlType]::Button) -Pattern "Device image *"
+        ConvertTo-Result -Ok $false -Message "A configured phone name is required for safe automatic ringing." -ErrorText "device_name_required"
+        exit 1
     }
     if ($null -ne $deviceButton) {
         $selectedDevice = $deviceButton.Current.Name -replace "^Device image\s*", ""
