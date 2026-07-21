@@ -1,6 +1,6 @@
 # Project Progress
 
-Last updated: 2026-07-20
+Last updated: 2026-07-21
 
 ## Goal
 
@@ -117,13 +117,16 @@ Assistant identity:
 - Employee report automation:
   - added an employee directory/report registry for `HR & Payroll` and the `Degebitskliniek Project` content-writer sheet;
   - employee directory ignores owner row `Ashfuq Hossain Raihan` and uses only active employee profile fields needed for reporting;
-  - weekly and monthly report images are generated as local PNG dashboard cards under `data\reports\`;
+  - weekly and monthly report images are generated from manageable HTML templates under `templates\reports\`, rendered to local PNG files under `data\reports\`;
+  - report templates include the ESEO logo, employee photos from the HR sheet when the linked Drive thumbnail is accessible, and clean initials fallback when it is not;
+  - content-writer targets now support historical changes: 6 rows per working day before Jul 21, 2026 and 9 rows per working day from Jul 21, 2026 onward;
   - WhatsApp report rules can send a caption plus image attachment through the dedicated whatsapp-web.js bridge;
   - manual `weekly report` and `monthly report` message rules are scoped to My Teletalk for testing;
   - scheduled rules are configured for Friday 9:00 PM weekly reports and last-day 9:15 PM monthly reports, currently to My Teletalk.
 - Employee report checks:
-  - live weekly report generated for Jul 20 - Jul 24, 2026 with 24 items and 61,144 tracked words;
-  - live monthly report generated for Jul 1 - Jul 31, 2026 with 117 items and 308,908 tracked words;
+  - live weekly HTML-to-PNG report generated for Jul 20 - Jul 24, 2026 with 24 items, 61,144 tracked words, 18/30 translated target rows, and 6 pending checks;
+  - live monthly HTML-to-PNG report generated for Jul 1 - Jul 31, 2026 with 117 items, 308,908 tracked words, 111/186 translated target rows, and 6 pending checks;
+  - visual inspection confirmed the weekly and monthly report PNGs fit the 1280x720 WhatsApp image layout with employee photos, ESEO branding, compact metrics, and unclipped table badges;
   - rule-engine dry run confirmed `weekly report` and `monthly report` produce report captions with media paths;
   - schedule matching confirmed Friday 9:00 PM triggers only weekly and Jul 31, 2026 9:15 PM triggers only monthly;
   - test weekly report image was sent to My Teletalk through WhatsApp.

@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import calendar
 import hashlib
+import html
 import json
-import os
 import re
-import sys
+import urllib.request
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -14,10 +14,10 @@ from typing import Any
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
-from PySide6.QtCore import QRectF, Qt
-from PySide6.QtGui import QColor, QFont, QFontDatabase, QGuiApplication, QImage, QPainter, QPen
+from googleapiclient.http import MediaIoBaseDownload
+from playwright.sync_api import sync_playwright
 
-from standalone_assistant.core.paths import EMPLOYEE_REPORTS_CONFIG, PROJECT_ROOT, REPORTS_DIR
+from standalone_assistant.core.paths import ASSETS_DIR, EMPLOYEE_REPORTS_CONFIG, PROJECT_ROOT, REPORT_TEMPLATES_DIR, REPORTS_DIR
 from standalone_assistant.core.time_parser import now_local
 
 
@@ -32,6 +32,7 @@ SHEETS_SCOPES = [
 class Employee:
     employee_id: str
     name: str
+    photo_link: str
     designation: str
     department: str
     status: str
@@ -73,6 +74,8 @@ class EmployeeStats:
     approved: int = 0
     pending: int = 0
     backlog: int = 0
+    target_items: int = 0
+    target_days: int = 0
     latest_keywords: list[str] = field(default_factory=list)
 
     @property
@@ -80,13 +83,31 @@ class EmployeeStats:
         return self.ready / self.items if self.items else 0.0
 
     @property
+    def translation_rate(self) -> float:
+        return self.translation_ready / self.items if self.items else 0.0
+
+    @property
+    def target_rate(self) -> float:
+        return self.translation_ready / self.target_items if self.target_items else (1.0 if self.translation_ready else 0.0)
+
+    @property
+    def target_gap(self) -> int:
+        return max(0, self.target_items - self.translation_ready)
+
+    @property
     def performance(self) -> str:
         if not self.items:
             return "No work logged"
+        if self.target_items and self.target_rate < 0.7:
+            return "Needs attention"
         if self.pending > max(2, self.items // 3):
             return "Needs attention"
-        if self.items >= 9 and self.ready_rate >= 0.8:
+        if self.target_items and self.target_rate >= 1.0 and self.pending == 0:
             return "Excellent"
+        if self.items >= 9 and self.ready_rate >= 0.8 and self.translation_rate >= 0.8:
+            return "Excellent"
+        if self.target_items and self.target_rate >= 0.85:
+            return "Good"
         if self.items >= 4 and self.ready_rate >= 0.6:
             return "Good"
         return "Watch"
@@ -102,12 +123,10 @@ class ReportResult:
 
 
 class EmployeeReportService:
-    _qt_app: QGuiApplication | None = None
-    _font_family = "Arial"
-
     def __init__(self, config_path: Path = EMPLOYEE_REPORTS_CONFIG) -> None:
         self.config_path = config_path
         self._sheets_service = None
+        self._drive_service = None
 
     def load_config(self) -> dict[str, Any]:
         try:
@@ -127,7 +146,12 @@ class EmployeeReportService:
             start, end, period_label = self.period(kind, now)
             items = self.load_work_items(config, employees)
             in_period = [item for item in items if item.work_date and start <= item.work_date <= end]
-            stats = self.build_stats(config, employees, items, in_period)
+            stats = self.build_stats(config, employees, items, in_period, start, end, now)
+            recent_items = sorted(
+                in_period,
+                key=lambda item: (item.work_date or date.min, item.employee_name.casefold(), item.keyword.casefold()),
+                reverse=True,
+            )[:8]
             report_data = {
                 "kind": kind,
                 "period_start": start.isoformat(),
@@ -139,6 +163,7 @@ class EmployeeReportService:
                 "words": sum(item.words for item in in_period),
                 "projects": sorted({item.project for item in in_period}),
                 "stats": stats,
+                "recent_items": recent_items,
             }
             caption = self.caption(report_data)
             image_path = self.render_image(report_data)
@@ -149,6 +174,18 @@ class EmployeeReportService:
     def sheets(self):
         if self._sheets_service is not None:
             return self._sheets_service
+        credentials = self.credentials()
+        self._sheets_service = build("sheets", "v4", credentials=credentials)
+        return self._sheets_service
+
+    def drive(self):
+        if self._drive_service is not None:
+            return self._drive_service
+        credentials = self.credentials()
+        self._drive_service = build("drive", "v3", credentials=credentials)
+        return self._drive_service
+
+    def credentials(self) -> Credentials:
         config = self.load_config().get("google", {})
         credentials_path = Path(str(config.get("credentials_path") or PROJECT_ROOT / "credentials.json"))
         token_path = Path(str(config.get("token_path") or PROJECT_ROOT / ".secrets" / "token.json"))
@@ -163,8 +200,7 @@ class EmployeeReportService:
             if credentials_path.exists():
                 raise RuntimeError(f"Google Sheets token is not connected for Noor reports. Reconnect with {credentials_path}.")
             raise RuntimeError("Google Sheets credentials are missing for Noor reports.")
-        self._sheets_service = build("sheets", "v4", credentials=credentials)
-        return self._sheets_service
+        return credentials
 
     def read_values(self, spreadsheet_url: str, sheet_name: str, a1_range: str) -> list[list[str]]:
         spreadsheet_id = self.spreadsheet_id(spreadsheet_url)
@@ -197,6 +233,7 @@ class EmployeeReportService:
             employee = Employee(
                 employee_id=self.row_value(row, headers, "employee id"),
                 name=name,
+                photo_link=self.row_value(row, headers, "photo link"),
                 designation=self.row_value(row, headers, "designation"),
                 department=self.row_value(row, headers, "department"),
                 status=status,
@@ -256,6 +293,9 @@ class EmployeeReportService:
         employees: dict[str, Employee],
         all_items: list[WorkItem],
         period_items: list[WorkItem],
+        period_start: date,
+        period_end: date,
+        now: datetime,
     ) -> list[EmployeeStats]:
         by_name: dict[str, EmployeeStats] = {}
         period_employee_names = {self.norm(item.employee_name) for item in period_items}
@@ -295,7 +335,54 @@ class EmployeeReportService:
                 key = self.norm(item.employee_name)
                 if key in by_name:
                     by_name[key].backlog += 1
+        effective_end = min(period_end, now.date())
+        for stats in by_name.values():
+            target_items, target_days = self.employee_target(config, stats.employee, stats.department, period_start, effective_end)
+            stats.target_items = target_items
+            stats.target_days = target_days
         return sorted(by_name.values(), key=lambda item: (item.items, item.words, item.name.casefold()), reverse=True)
+
+    def employee_target(self, config: dict[str, Any], employee: Employee | None, department: str, start: date, end: date) -> tuple[int, int]:
+        if end < start:
+            return 0, 0
+        target_configs = config.get("performance_targets", {})
+        if not isinstance(target_configs, dict):
+            return 0, 0
+        employee_department = self.norm(employee.department if employee else department)
+        for target in target_configs.values():
+            if not isinstance(target, dict):
+                continue
+            if self.norm(target.get("team", "")) != employee_department:
+                continue
+            working_days = {self.norm(day)[:3] for day in target.get("working_days", []) if str(day).strip()}
+            history = [item for item in target.get("history", []) if isinstance(item, dict)]
+            history.sort(key=lambda item: str(item.get("start_date") or "0000-00-00"))
+            total = 0
+            days = 0
+            current = start
+            while current <= end:
+                day_key = self.norm(current.strftime("%a"))[:3]
+                if not working_days or day_key in working_days:
+                    daily_items = self.target_for_day(history, current)
+                    total += daily_items
+                    days += int(daily_items > 0)
+                current += timedelta(days=1)
+            return total, days
+        return 0, 0
+
+    @classmethod
+    def target_for_day(cls, history: list[dict[str, Any]], current: date) -> int:
+        selected: dict[str, Any] | None = None
+        for item in history:
+            start = cls.parse_date(str(item.get("start_date") or ""))
+            if start and start <= current:
+                selected = item
+        if not selected:
+            return 0
+        try:
+            return int(selected.get("daily_items") or (int(selected.get("categories_per_day", 0)) * int(selected.get("rows_per_category", 0))))
+        except (TypeError, ValueError):
+            return 0
 
     def caption(self, data: dict[str, Any]) -> str:
         stats: list[EmployeeStats] = data["stats"]
@@ -304,158 +391,284 @@ class EmployeeReportService:
         total_items = int(data["items"])
         total_words = int(data["words"])
         ready = sum(item.ready for item in stats)
+        translated = sum(item.translation_ready for item in stats)
+        target = sum(item.target_items for item in stats)
         pending = sum(item.pending for item in stats)
         top = next((item for item in stats if item.items), None)
         lines = [
             f"{kind} Work Progress",
             f"Period: {data['period_label']}",
             f"Projects: {projects}",
-            f"Total: {total_items} items, {total_words:,} words, {ready} ready drafts, {pending} pending checks.",
+            f"Total: {total_items} items, {total_words:,} words, {ready} ready drafts, {translated}/{target or translated} translated target, {pending} pending checks.",
         ]
         if top:
             lines.append(f"Top output: {top.name} - {top.items} items, {top.words:,} words, {top.performance}.")
-        lines.append("Visual report attached.")
         return "\n".join(lines)[:1000]
 
     def render_image(self, data: dict[str, Any]) -> Path:
-        self.ensure_qt_app()
         REPORTS_DIR.mkdir(parents=True, exist_ok=True)
-        stats: list[EmployeeStats] = data["stats"]
-        visible_stats = stats[:8]
-        width = 1280
-        height = max(760, 515 + len(visible_stats) * 74)
-        image = QImage(width, height, QImage.Format_ARGB32)
-        image.fill(QColor("#f5f8fb"))
-        painter = QPainter(image)
-        painter.setRenderHint(QPainter.Antialiasing)
-        try:
-            self.draw_report(painter, width, height, data, visible_stats)
-        finally:
-            painter.end()
         digest = hashlib.sha1(f"{data['kind']}:{data['period_start']}:{data['period_end']}:{datetime.utcnow().isoformat()}".encode("utf-8")).hexdigest()[:10]
-        path = REPORTS_DIR / f"employee_{data['kind']}_report_{data['period_start']}_{digest}.png"
-        image.save(str(path), "PNG")
-        return path
+        base_name = f"employee_{data['kind']}_report_{data['period_start']}_{digest}"
+        html_path = REPORTS_DIR / f"{base_name}.html"
+        image_path = REPORTS_DIR / f"{base_name}.png"
+        html_path.write_text(self.render_html(data), encoding="utf-8")
+        self.capture_html_report(html_path, image_path)
+        return image_path
 
-    @classmethod
-    def ensure_qt_app(cls) -> None:
-        existing = QGuiApplication.instance()
-        if existing is None:
-            os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-            cls._qt_app = QGuiApplication(sys.argv[:1])
-        for font_path in (Path("C:/Windows/Fonts/arial.ttf"), Path("C:/Windows/Fonts/calibri.ttf")):
-            if font_path.exists():
-                font_id = QFontDatabase.addApplicationFont(str(font_path))
-                families = QFontDatabase.applicationFontFamilies(font_id)
-                if families:
-                    cls._font_family = families[0]
-                    break
+    def render_html(self, data: dict[str, Any]) -> str:
+        config = self.load_config()
+        template_path = self.resolve_config_path(str((config.get("templates") or {}).get(str(data["kind"]), "")))
+        if not template_path.exists():
+            template_path = REPORT_TEMPLATES_DIR / f"employee_{data['kind']}_report.html"
+        template = template_path.read_text(encoding="utf-8")
+        context = self.template_context(data, config)
+        return re.sub(r"\{\{([A-Za-z0-9_]+)\}\}", lambda item: context.get(item.group(1), ""), template)
 
-    def draw_report(self, painter: QPainter, width: int, height: int, data: dict[str, Any], stats: list[EmployeeStats]) -> None:
-        navy = QColor("#102033")
-        muted = QColor("#617085")
-        teal = QColor("#00a99d")
-        blue = QColor("#2364aa")
-        amber = QColor("#f0a202")
-        red = QColor("#d64550")
-        green = QColor("#168a55")
-        white = QColor("#ffffff")
-        line = QColor("#d8e1ec")
+    def capture_html_report(self, html_path: Path, image_path: Path) -> None:
+        chrome_path = self.chrome_path()
+        launch_options: dict[str, Any] = {"headless": True, "args": ["--disable-gpu", "--no-sandbox"]}
+        if chrome_path:
+            launch_options["executable_path"] = chrome_path
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(**launch_options)
+            try:
+                page = browser.new_page(viewport={"width": 1280, "height": 720}, device_scale_factor=1)
+                page.goto(html_path.resolve().as_uri(), wait_until="networkidle")
+                page.locator(".report-page").screenshot(path=str(image_path), animations="disabled")
+            finally:
+                browser.close()
 
-        self.rounded_rect(painter, 0, 0, width, 176, QColor("#11243a"), 0)
-        painter.setPen(white)
-        self.set_font(painter, 30, True)
-        painter.drawText(QRectF(44, 34, width - 88, 42), Qt.AlignLeft | Qt.AlignVCenter, f"ESEO {str(data['kind']).title()} Work Progress")
-        self.set_font(painter, 15, False)
-        painter.setPen(QColor("#b6c7d8"))
-        painter.drawText(QRectF(46, 78, width - 92, 28), Qt.AlignLeft | Qt.AlignVCenter, str(data["period_label"]))
-        painter.drawText(QRectF(46, 110, width - 92, 28), Qt.AlignLeft | Qt.AlignVCenter, f"Generated {self.display_generated_at(str(data['generated_at']))}")
+    @staticmethod
+    def chrome_path() -> str:
+        for candidate in [
+            Path("C:/Program Files/Google/Chrome/Application/chrome.exe"),
+            Path("C:/Program Files (x86)/Google/Chrome/Application/chrome.exe"),
+        ]:
+            if candidate.exists():
+                return str(candidate)
+        return ""
 
-        total_items = int(data["items"])
-        total_words = int(data["words"])
-        ready = sum(item.ready for item in stats)
-        approved = sum(item.approved for item in stats)
-        pending = sum(item.pending for item in stats)
-        active_people = sum(1 for item in stats if item.items)
-        cards = [
-            ("Items", f"{total_items}", "dated work rows", teal),
-            ("Words", f"{total_words:,}", "tracked output", blue),
-            ("Ready", f"{ready}", "drafts ready", green),
-            ("Pending", f"{pending}", "checks open", amber if pending else green),
-            ("People", f"{active_people}", "active this period", QColor("#6d5bd0")),
-        ]
-        card_w = (width - 88 - 4 * 18) / 5
-        x = 44.0
-        for title, value, subtitle, color in cards:
-            self.rounded_rect(painter, x, 128, card_w, 108, white, 14)
-            self.rounded_rect(painter, x, 128, 6, 108, color, 3)
-            painter.setPen(muted)
-            self.set_font(painter, 12, True)
-            painter.drawText(QRectF(x + 22, 146, card_w - 34, 22), Qt.AlignLeft | Qt.AlignVCenter, title.upper())
-            painter.setPen(navy)
-            self.set_font(painter, 25, True)
-            painter.drawText(QRectF(x + 22, 169, card_w - 34, 34), Qt.AlignLeft | Qt.AlignVCenter, value)
-            painter.setPen(muted)
-            self.set_font(painter, 12, False)
-            painter.drawText(QRectF(x + 22, 205, card_w - 34, 22), Qt.AlignLeft | Qt.AlignVCenter, subtitle)
-            x += card_w + 18
-
-        y = 272
-        self.rounded_rect(painter, 44, y, width - 88, height - y - 34, white, 18)
-        painter.setPen(navy)
-        self.set_font(painter, 20, True)
-        painter.drawText(QRectF(72, y + 20, width - 144, 30), Qt.AlignLeft | Qt.AlignVCenter, "Employee Performance")
-        painter.setPen(muted)
-        self.set_font(painter, 12, False)
+    def template_context(self, data: dict[str, Any], config: dict[str, Any]) -> dict[str, str]:
+        kind = str(data["kind"])
+        stats: list[EmployeeStats] = data["stats"]
         projects = ", ".join(data.get("projects") or ["No active project rows"])
-        painter.drawText(QRectF(72, y + 52, width - 144, 24), Qt.AlignLeft | Qt.AlignVCenter, f"Sources: HR & Payroll, {projects}")
+        active_people = sum(1 for item in stats if item.items)
+        target = sum(item.target_items for item in stats)
+        translated = sum(item.translation_ready for item in stats)
+        pending = sum(item.pending for item in stats)
+        ready = sum(item.ready for item in stats)
+        metric_cards = self.metric_cards(
+            [
+                ("Items", self.format_int(int(data["items"])), "work rows logged", "#00a99d"),
+                ("Words", self.format_int(int(data["words"])), "tracked output", "#2364aa"),
+                ("Translated", f"{translated}/{target or translated}", "target-ready rows", "#178a56"),
+                ("Pending", self.format_int(pending), "checks open", "#e29b16" if pending else "#178a56"),
+                ("People", self.format_int(active_people), "active contributors", "#6b5bd6"),
+            ]
+        )
+        top = next((item for item in stats if item.items), None)
+        context = {
+            "report_title": f"{kind.title()} Progress Report",
+            "report_subtitle": f"Content Writing performance for {projects}. Targets reflect 3 categories per person per working day from July 21, 2026.",
+            "period_label": str(data["period_label"]),
+            "generated_at": self.display_generated_at(str(data["generated_at"])),
+            "metric_cards": metric_cards,
+            "team_rows": self.team_rows(kind, stats[:7]),
+            "top_employee": self.escape(top.name if top else "No work logged"),
+            "top_employee_note": self.escape(f"{top.items} items, {top.words:,} words, {top.translation_ready}/{top.target_items or top.translation_ready} translated target." if top else "No dated work rows were found for this report period."),
+            "quality_pills": self.quality_pills(ready, translated, pending),
+            "deliverable_rows": self.deliverable_rows(data.get("recent_items", [])),
+            "source_label": self.escape(f"Sources: HR & Payroll + {projects}"),
+            "privacy_note": "Private payroll, bank, NID, and personal-contact fields excluded",
+            "stylesheet_uri": self.resolve_config_path(str((config.get("templates") or {}).get("stylesheet", "")), REPORT_TEMPLATES_DIR / "employee_report.css").resolve().as_uri(),
+            "logo_uri": self.resolve_config_path(str((config.get("templates") or {}).get("logo_path", "")), ASSETS_DIR / "branding" / "eseo-logo.png").resolve().as_uri(),
+        }
+        return context
 
-        table_y = y + 92
-        headers = ["Employee", "Items", "Words", "Ready", "Approved", "Pending", "Performance"]
-        positions = [72, 505, 610, 760, 875, 1000, 1110]
-        painter.setPen(QColor("#8290a4"))
-        self.set_font(painter, 11, True)
-        for left, header in zip(positions, headers):
-            painter.drawText(QRectF(left, table_y, 150, 22), Qt.AlignLeft | Qt.AlignVCenter, header.upper())
-        painter.setPen(QPen(line, 1))
-        painter.drawLine(72, table_y + 31, width - 72, table_y + 31)
+    @staticmethod
+    def resolve_config_path(value: str, fallback: Path | None = None) -> Path:
+        raw = str(value or "").strip()
+        if raw:
+            path = Path(raw)
+            return path if path.is_absolute() else PROJECT_ROOT / path
+        return fallback or PROJECT_ROOT
 
-        row_y = table_y + 46
-        max_words = max([item.words for item in stats] + [1])
-        for index, stat in enumerate(stats):
-            bg = QColor("#f7fafc") if index % 2 == 0 else QColor("#ffffff")
-            self.rounded_rect(painter, 64, row_y - 8, width - 128, 60, bg, 10)
-            initials = self.initials(stat.name)
-            avatar_color = teal if stat.performance == "Excellent" else blue if stat.performance == "Good" else amber if stat.performance == "Watch" else red
-            self.rounded_rect(painter, 74, row_y, 42, 42, avatar_color, 21)
-            painter.setPen(white)
-            self.set_font(painter, 13, True)
-            painter.drawText(QRectF(74, row_y, 42, 42), Qt.AlignCenter, initials)
+    def metric_cards(self, metrics: list[tuple[str, str, str, str]]) -> str:
+        cards = []
+        for label, value, note, color in metrics:
+            cards.append(
+                (
+                    f'<div class="metric" style="--metric-color: {self.escape(color)}">'
+                    f'<div class="metric-label">{self.escape(label)}</div>'
+                    f'<div class="metric-value">{self.escape(value)}</div>'
+                    f'<div class="metric-note">{self.escape(note)}</div>'
+                    "</div>"
+                )
+            )
+        return "".join(cards)
 
-            painter.setPen(navy)
-            self.set_font(painter, 14, True)
-            painter.drawText(QRectF(128, row_y - 1, 350, 22), Qt.AlignLeft | Qt.AlignVCenter, stat.name)
-            painter.setPen(muted)
-            self.set_font(painter, 11, False)
-            subtitle = stat.designation or stat.department or "Employee"
-            painter.drawText(QRectF(128, row_y + 21, 350, 19), Qt.AlignLeft | Qt.AlignVCenter, subtitle[:54])
+    def team_rows(self, kind: str, stats: list[EmployeeStats]) -> str:
+        if not stats:
+            column_count = 7
+            return f'<tr><td class="empty-row" colspan="{column_count}">No employee work rows found for this period.</td></tr>'
+        rows = []
+        for item in stats:
+            employee_cell = self.employee_cell(item)
+            status = f'<span class="badge {self.performance_class(item.performance)}">{self.escape(item.performance)}</span>'
+            if kind == "monthly":
+                rows.append(
+                    "<tr>"
+                    f"<td>{employee_cell}</td>"
+                    f'<td><span class="number">{self.format_int(item.items)}</span><span class="small-muted">Target {self.format_int(item.target_items)}</span></td>'
+                    f'<td><span class="number">{self.format_int(item.words)}</span></td>'
+                    f'<td><span class="number">{self.format_int(item.base_items)} / {self.format_int(item.variations)}</span></td>'
+                    f'<td><span class="number">{self.format_int(item.proofread_done)}</span><span class="small-muted">{self.format_int(item.ready)} drafts ready</span></td>'
+                    f'<td><span class="number">{self.format_int(item.translation_ready)}</span><span class="small-muted">Gap {self.format_int(item.target_gap)}</span></td>'
+                    f"<td>{status}</td>"
+                    "</tr>"
+                )
+                continue
+            recent = "; ".join(item.latest_keywords[:2]) or "No recent keyword"
+            rows.append(
+                "<tr>"
+                f"<td>{employee_cell}</td>"
+                f'<td><span class="number">{self.format_int(item.items)}</span><span class="small-muted">Target {self.format_int(item.target_items)}</span></td>'
+                f'<td><span class="number">{self.format_int(item.words)}</span></td>'
+                f'<td><span class="number">{self.format_int(item.ready)}</span><span class="small-muted">{self.format_int(item.translation_ready)} translated</span></td>'
+                f'<td><span class="number">{self.format_int(item.pending)}</span><span class="small-muted">Open checks</span></td>'
+                f'<td><div class="keyword-list">{self.escape(recent)}</div></td>'
+                f"<td>{status}</td>"
+                "</tr>"
+            )
+        return "".join(rows)
 
-            painter.setPen(navy)
-            self.set_font(painter, 14, True)
-            painter.drawText(QRectF(505, row_y + 6, 80, 28), Qt.AlignLeft | Qt.AlignVCenter, str(stat.items))
-            painter.drawText(QRectF(610, row_y + 6, 130, 28), Qt.AlignLeft | Qt.AlignVCenter, f"{stat.words:,}")
-            self.progress_bar(painter, 610, row_y + 38, 115, 5, stat.words / max_words, blue)
-            painter.drawText(QRectF(760, row_y + 6, 80, 28), Qt.AlignLeft | Qt.AlignVCenter, str(stat.ready))
-            painter.drawText(QRectF(875, row_y + 6, 80, 28), Qt.AlignLeft | Qt.AlignVCenter, str(stat.approved))
-            painter.setPen(red if stat.pending else green)
-            painter.drawText(QRectF(1000, row_y + 6, 80, 28), Qt.AlignLeft | Qt.AlignVCenter, str(stat.pending))
-            self.badge(painter, 1110, row_y + 7, stat.performance)
-            row_y += 74
+    def employee_cell(self, item: EmployeeStats) -> str:
+        photo_uri = self.employee_photo_uri(item.employee)
+        if photo_uri:
+            avatar = f'<span class="avatar photo"><img src="{self.escape(photo_uri)}" alt=""></span>'
+        else:
+            avatar = f'<span class="avatar">{self.escape(self.initials(item.name))}</span>'
+        role = item.designation or item.department or "Team member"
+        return (
+            '<div class="employee-cell">'
+            f"{avatar}"
+            "<div>"
+            f'<div class="employee-name">{self.escape(item.name)}</div>'
+            f'<div class="employee-role">{self.escape(role)}</div>'
+            "</div>"
+            "</div>"
+        )
 
-        footer_y = height - 50
-        painter.setPen(QColor("#91a0b4"))
-        self.set_font(painter, 11, False)
-        painter.drawText(QRectF(72, footer_y, width - 144, 20), Qt.AlignLeft | Qt.AlignVCenter, "Private payroll, bank, NID, and personal-contact fields are excluded from this WhatsApp report.")
+    def employee_photo_uri(self, employee: Employee | None) -> str:
+        if not employee or not employee.photo_link:
+            return ""
+        raw = employee.photo_link.strip()
+        if raw.startswith(("file:/", "data:")):
+            return raw
+        file_id = self.drive_file_id(raw)
+        if not file_id:
+            return raw if raw.startswith(("http://", "https://")) else ""
+        cache_dir = REPORTS_DIR / "employee-photos"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        extension = ".jpg"
+        cache_path = cache_dir / f"{re.sub(r'[^A-Za-z0-9_-]', '_', file_id)}{extension}"
+        if cache_path.exists() and cache_path.stat().st_size > 0:
+            return cache_path.resolve().as_uri()
+        try:
+            request = self.drive().files().get_media(fileId=file_id)
+            with cache_path.open("wb") as handle:
+                downloader = MediaIoBaseDownload(handle, request)
+                done = False
+                while not done:
+                    _, done = downloader.next_chunk()
+            if cache_path.exists() and cache_path.stat().st_size > 0:
+                return cache_path.resolve().as_uri()
+        except Exception:
+            try:
+                cache_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        if self.download_public_drive_thumbnail(file_id, cache_path):
+            return cache_path.resolve().as_uri()
+        return ""
+
+    @staticmethod
+    def download_public_drive_thumbnail(file_id: str, cache_path: Path) -> bool:
+        url = f"https://drive.google.com/thumbnail?id={file_id}&sz=w160"
+        request = urllib.request.Request(url, headers={"User-Agent": "NoorEmployeeReport/1.0"})
+        try:
+            with urllib.request.urlopen(request, timeout=20) as response:
+                content_type = response.headers.get("Content-Type", "")
+                body = response.read()
+            if len(body) < 512 or "text/html" in content_type.casefold():
+                return False
+            cache_path.write_bytes(body)
+            return True
+        except Exception:
+            try:
+                cache_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            return False
+
+    @staticmethod
+    def drive_file_id(value: str) -> str:
+        patterns = [
+            r"/file/d/([A-Za-z0-9_-]+)",
+            r"[?&]id=([A-Za-z0-9_-]+)",
+            r"/open\?id=([A-Za-z0-9_-]+)",
+            r"/uc\?id=([A-Za-z0-9_-]+)",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, value)
+            if match:
+                return match.group(1)
+        if re.fullmatch(r"[A-Za-z0-9_-]{20,}", value.strip()):
+            return value.strip()
+        return ""
+
+    def quality_pills(self, ready: int, translated: int, pending: int) -> str:
+        pills = [
+            (self.format_int(ready), "drafts ready"),
+            (self.format_int(translated), "translated"),
+            (self.format_int(pending), "pending"),
+        ]
+        return "".join(f"<div class=\"quality-pill\"><strong>{value}</strong><span>{self.escape(label)}</span></div>" for value, label in pills)
+
+    def deliverable_rows(self, items: list[WorkItem]) -> str:
+        if not items:
+            return '<li><span>No recent work rows found</span><span class="deliverable-owner">-</span></li>'
+        rows = []
+        for item in items[:3]:
+            date_label = item.work_date.strftime("%b %d") if item.work_date else "No date"
+            title = item.keyword or item.item_type or "Untitled item"
+            meta = f"{item.employee_name} - {date_label}"
+            rows.append(
+                "<li>"
+                f"<span>{self.escape(title)}</span>"
+                f'<span class="deliverable-owner">{self.escape(meta)}</span>'
+                "</li>"
+            )
+        return "".join(rows)
+
+    @staticmethod
+    def performance_class(label: str) -> str:
+        classes = {
+            "Excellent": "perf-excellent",
+            "Good": "perf-good",
+            "Watch": "perf-watch",
+            "Needs attention": "perf-attention",
+            "No work logged": "perf-empty",
+        }
+        return classes.get(label, "perf-empty")
+
+    @staticmethod
+    def format_int(value: int) -> str:
+        return f"{int(value):,}"
+
+    @staticmethod
+    def escape(value: Any) -> str:
+        return html.escape(str(value or ""), quote=True)
 
     def period(self, kind: str, now: datetime) -> tuple[date, date, str]:
         today = now.date()
@@ -558,38 +771,6 @@ class EmployeeReportService:
     @classmethod
     def is_pending(cls, item: WorkItem) -> bool:
         return any("pending" in cls.norm(value) or "wip" in cls.norm(value) for value in [item.draft_status, item.proofread, item.translation, item.publication, item.review_status])
-
-    @staticmethod
-    def set_font(painter: QPainter, size: int, bold: bool = False) -> None:
-        font = QFont(EmployeeReportService._font_family, size)
-        font.setBold(bold)
-        painter.setFont(font)
-
-    @staticmethod
-    def rounded_rect(painter: QPainter, x: float, y: float, w: float, h: float, color: QColor, radius: float) -> None:
-        painter.setPen(Qt.NoPen)
-        painter.setBrush(color)
-        painter.drawRoundedRect(QRectF(x, y, w, h), radius, radius)
-
-    @classmethod
-    def badge(cls, painter: QPainter, x: float, y: float, label: str) -> None:
-        colors = {
-            "Excellent": (QColor("#dff7ed"), QColor("#127a4c")),
-            "Good": (QColor("#e2edff"), QColor("#245aa8")),
-            "Watch": (QColor("#fff4dc"), QColor("#956000")),
-            "Needs attention": (QColor("#ffe5e8"), QColor("#b42030")),
-            "No work logged": (QColor("#eef2f6"), QColor("#637083")),
-        }
-        bg, fg = colors.get(label, colors["No work logged"])
-        cls.rounded_rect(painter, x, y, 132, 28, bg, 14)
-        painter.setPen(fg)
-        cls.set_font(painter, 10, True)
-        painter.drawText(QRectF(x + 8, y, 116, 28), Qt.AlignCenter, label)
-
-    @classmethod
-    def progress_bar(cls, painter: QPainter, x: float, y: float, w: float, h: float, ratio: float, color: QColor) -> None:
-        cls.rounded_rect(painter, x, y, w, h, QColor("#dfe7f1"), h / 2)
-        cls.rounded_rect(painter, x, y, max(4, w * max(0.0, min(1.0, ratio))), h, color, h / 2)
 
     @staticmethod
     def initials(name: str) -> str:

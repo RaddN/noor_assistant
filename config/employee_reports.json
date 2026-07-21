@@ -15,6 +15,40 @@
     "credentials_path": "E:/ESEO/content-review-manager/credentials.json",
     "token_path": "E:/ESEO/content-review-manager/.secrets/token.json"
   },
+  "templates": {
+    "logo_path": "assets/branding/eseo-logo.png",
+    "stylesheet": "templates/reports/employee_report.css",
+    "weekly": "templates/reports/employee_weekly_report.html",
+    "monthly": "templates/reports/employee_monthly_report.html"
+  },
+  "performance_targets": {
+    "content_writer": {
+      "team": "Content Writing",
+      "target_unit": "content rows",
+      "working_days": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri"
+      ],
+      "history": [
+        {
+          "start_date": "2026-01-01",
+          "categories_per_day": 2,
+          "rows_per_category": 3,
+          "daily_items": 6
+        },
+        {
+          "start_date": "2026-07-21",
+          "categories_per_day": 3,
+          "rows_per_category": 3,
+          "daily_items": 9
+        }
+      ],
+      "quality_gate": "translation_ready"
+    }
+  },
   "targets": [
     {
       "id": "my-teletalk",

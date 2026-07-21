@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=1280, initial-scale=1">
+    <title>{{report_title}}</title>
+    <link rel="stylesheet" href="{{stylesheet_uri}}">
+  </head>
+  <body>
+    <main class="report-page">
+      <section class="sheet weekly-accent">
+        <header class="top-bar">
+          <div class="brand">
+            <img src="{{logo_uri}}" alt="ESEO">
+            <div class="brand-caption">Internal Progress</div>
+          </div>
+          <div>
+            <h1 class="report-title">{{report_title}}</h1>
+            <div class="report-subtitle">{{report_subtitle}}</div>
+          </div>
+          <aside class="period-card">
+            <div class="period-label">Reporting week</div>
+            <div class="period-value">{{period_label}}</div>
+            <div class="generated">Prepared {{generated_at}}</div>
+          </aside>
+        </header>
+
+        <section class="metrics">
+          {{metric_cards}}
+        </section>
+
+        <section class="content-grid">
+          <article class="panel">
+            <div class="panel-header">
+              <h2 class="panel-title">Team Delivery</h2>
+              <div class="panel-note">Current week output from configured project trackers</div>
+            </div>
+            <table class="table">
+              <thead>
+                <tr>
+                  <th style="width: 30%;">Employee</th>
+                  <th style="width: 9%;">Items</th>
+                  <th style="width: 11%;">Words</th>
+                  <th style="width: 10%;">Ready</th>
+                  <th style="width: 10%;">Pending</th>
+                  <th style="width: 14%;">Recent focus</th>
+                  <th style="width: 16%;">Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {{team_rows}}
+              </tbody>
+            </table>
+          </article>
+
+          <aside class="side-panel">
+            <div class="mini-card">
+              <h3 class="mini-title">Top output</h3>
+              <div class="mini-value">{{top_employee}}</div>
+              <div class="mini-copy">{{top_employee_note}}</div>
+            </div>
+            <div class="mini-card">
+              <h3 class="mini-title">Quality movement</h3>
+              <div class="quality-strip">
+                {{quality_pills}}
+              </div>
+            </div>
+            <div class="deliverables">
+              <h3 class="mini-title">Latest work logged</h3>
+              <ul class="deliverable-list">
+                {{deliverable_rows}}
+              </ul>
+            </div>
+          </aside>
+        </section>
+
+        <footer class="footer">
+          <span>{{source_label}}</span>
+          <span>{{privacy_note}}</span>
+        </footer>
+      </section>
+    </main>
+  </body>
+</html>
